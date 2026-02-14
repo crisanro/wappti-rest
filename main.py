@@ -58,10 +58,7 @@ class IPBlockerMiddleware(BaseHTTPMiddleware):
 app = FastAPI(
     title="WAPPTI API",
     description="Central connection point for business management and automation",
-    version="0.0.1",
-    openapi_url="/api/v1/rest/openapi.json", # Forzar la ruta del JSON
-    docs_url="/api/v1/rest/docs",           # Forzar la ruta de la documentación
-    root_path="/api/v1/rest"                # Opcional: ayuda a FastAPI a entender el proxy
+    version="0.0.1"             # Opcional: ayuda a FastAPI a entender el proxy
 )
 
 # --- 4. EVENTOS DE SISTEMA ---
@@ -138,3 +135,4 @@ def health_check():
 # Note: The 'registrar_log_actividad' function has been moved to core/utils.py 
 
 # as 'register_action_log' to keep this main file clean and modular.
+
