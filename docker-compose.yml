@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  api:
+    build: .
+    container_name: manager_api_prod
+    ports:
+      - "8000:8000"
+    # Cargamos el archivo .env (solo para local, en Dokploy se configuran en el panel)
+    env_file:
+      - .env
+    environment:
+      - DEBUG=False           # Seguridad ante todo
+    restart: always

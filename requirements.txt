@@ -1,0 +1,23 @@
+
+# Servidor y Framework Base
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+gunicorn==21.2.0
+
+# Base de Datos y ORM
+sqlalchemy==2.0.25
+psycopg2-binary==2.9.9  # Asumiendo que usas PostgreSQL (común en Dokploy)
+
+# Seguridad y Autenticación
+firebase-admin==6.4.0
+python-jose[cryptography]==3.3.0
+python-multipart==0.0.6
+passlib[bcrypt]==1.7.4
+
+# Manejo de Entorno y Utilidades
+python-dotenv==1.0.0
+pydantic[email]==2.5.3
+pytz==2023.3.post1
+
+# Manejo de red (si haces peticiones externas en integra.py)
+httpx==0.26.0
