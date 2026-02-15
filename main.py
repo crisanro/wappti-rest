@@ -6,12 +6,19 @@ from core.database import SessionLocal
 # Asegúrate de importar SessionLocal y BlockedIP de tus archivos
 # from database import SessionLocal 
 # from models import BlockedIP
-from routers import ( establishment, customer, whatsapp, notifications,
-    referral, financials, profile, support, validation, notes, 
-    marketing, tags, appointments, operation, kipu
-)
-from datetime import datetime, time, timedelta
+
 import time as time_lib
+
+from routers.calendar import appointments, notes
+from routers.communication import notifications, whatsapp
+from routers.customers import base as base_custom
+from routers.customers import tags as tags_custom
+from routers.customers import finances, operation
+from routers.establishments import base as base_estab
+from routers.establishments import activity, financials, profile, tags
+from routers.integrations import kipu
+from routers.marketing import marketing, referral
+from routers.support import support, validation
 
 # --- 1. CACHE DE SEGURIDAD ---
 blocked_ips_cache = set()
@@ -58,7 +65,7 @@ class IPBlockerMiddleware(BaseHTTPMiddleware):
 app = FastAPI(
     title="WAPPTI API",
     description="Central connection point for business management and automation",
-    version="0.0.1"             # Opcional: ayuda a FastAPI a entender el proxy
+    version="0.0.1"
 )
 
 # --- 4. EVENTOS DE SISTEMA ---
@@ -103,19 +110,28 @@ app.add_middleware(
 
 # 6. Router Registration
 # Organized with professional English prefixes
-app.include_router(establishment.router, prefix="/establishment", tags=["Establishments"])
+app.include_router(base_estab.router, prefix="/establishment", tags=["Establishments"])
+app.include_router(activity.router, prefix="/establishment", tags=["Establishments"])
 app.include_router(profile.router, prefix="/profile", tags=["Establishments"])
-app.include_router(customer.router, prefix="/customer", tags=["Customers"])
-app.include_router(kipu.router, prefix="/kipu", tags=["kipu"])
+app.include_router(tags.router, prefix="/tags", tags=["Establishments"])
+app.include_router(financials.router, prefix="/financials", tags=["Establishments"])
+
+app.include_router(base_custom.router, prefix="/customer", tags=["Customers"])
+app.include_router(finances.router, prefix="/customer", tags=["Customers"])
+app.include_router(tags_custom.router, prefix="/customer", tags=["Customers"])
+
+app.include_router(kipu.router, prefix="/kipu", tags=["Integraciones"])
+
 app.include_router(operation.router, prefix="/operation", tags=["Operations"])
 app.include_router(appointments.router, prefix="/appointments", tags=["Operations"])
 app.include_router(notes.router, prefix="/notes", tags=["Operations"])
-app.include_router(tags.router, prefix="/tags", tags=["Operations"])
+
 app.include_router(marketing.router, prefix="/marketing", tags=["Marketing"])
+app.include_router(referral.router, prefix="/referral", tags=["Marketing"])
+
 app.include_router(whatsapp.router, prefix="/whatsapp", tags=["WhatsApp & Notifications"])
 app.include_router(notifications.router, prefix="/notifications", tags=["WhatsApp & Notifications"])
-app.include_router(financials.router, prefix="/financials", tags=["Finance & Referrals"])
-app.include_router(referral.router, prefix="/referral", tags=["Finance & Referrals"])
+
 app.include_router(support.router, prefix="/support", tags=["Support & Feedback"])
 app.include_router(validation.router, prefix="/validation", tags=["Validation"])
 
@@ -133,6 +149,4 @@ def health_check():
     }
 
 # Note: The 'registrar_log_actividad' function has been moved to core/utils.py 
-
 # as 'register_action_log' to keep this main file clean and modular.
-
