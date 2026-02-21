@@ -183,7 +183,7 @@ def terminate_establishment_data(
         
         # Access & Security
         db.query(AppAccessPin).filter(AppAccessPin.id == establishment_id).delete()
-        db.query(WhatsappAuthPin).filter(WhatsappAuthPin.associated_phone.in_(
+        db.query(WhatsAppAuthPin).filter(WhatsAppAuthPin.associated_phone.in_(
             db.query(Customer.phone).filter(Customer.establishment_id == establishment_id)
         )).delete()
 
@@ -199,8 +199,8 @@ def terminate_establishment_data(
         # Marketing & System
         db.query(CustomerTag).filter(CustomerTag.establishment_id == establishment_id).delete()
         db.query(CalendarNote).filter(CalendarNote.establishment_id == establishment_id).delete()
-        db.query(WhatsappCampaign).filter(WhatsappCampaign.establishment_id == establishment_id).delete()
-        db.query(WhatsappDispatch).filter(WhatsappDispatch.establishment_id == establishment_id).delete()
+        db.query(WhatsAppCampaign).filter(WhatsAppCampaign.establishment_id == establishment_id).delete()
+        db.query(WhatsAppDispatch).filter(WhatsAppDispatch.establishment_id == establishment_id).delete()
         db.query(PendingFollowup).filter(PendingFollowup.establishment_id == establishment_id).delete()
         db.query(SystemAlert).filter(SystemAlert.establishment_id == establishment_id).delete()
 
