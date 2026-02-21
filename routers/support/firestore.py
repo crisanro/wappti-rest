@@ -194,7 +194,7 @@ async def validate_and_activate(
             # Si no se encontró por ID o no era número, buscamos por el código (slug)
             if not ref_record:
                 clean_code = "".join(ref_input.split()).lower()
-                ref_record = db.query(ReferralCode).filter(ReferralCode.code == clean_code).first()
+                ref_record = db.query(ReferralCode).filter(ReferralCode.id == clean_code).first()
             
             if not ref_record:
                 await fire_security_webhook("INVALID_REF_CODE", user_id, {"code": data.referred_by}, request)
