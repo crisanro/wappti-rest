@@ -20,7 +20,7 @@ from core.utils import register_action_log
 # Models & Schemas
 from models import (
     WhatsAppAuthPin, ReferralCode, Establishment, 
-    UsageAuditLog, AppNotification
+    UsageAuditLog, AppNotification, SystemAudit
 )
 from schemas.validation import (
     CheckPhoneSchema, PinRequestSchema, 
