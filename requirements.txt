@@ -22,4 +22,6 @@ pytz
 # Manejo de red (si haces peticiones externas en integra.py)
 httpx
 
+stripe
+
 google-cloud-firestore
