@@ -1,29 +1,32 @@
 import os
-from google.cloud import firestore
-from google.oauth2 import service_account
-from google.cloud.firestore_v1.base_query import FieldFilter
-from dotenv import load_dotenv
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from core.auth import verify_firebase_token
-from core.database import get_db
-from sqlalchemy.orm import Session
-
+import httpx
 import random
-from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
-from sqlalchemy.orm import Session
-from sqlalchemy import and_, cast, Date
-from firebase_admin import firestore
 from datetime import datetime, timezone
+from typing import Optional
 
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
+from google.cloud import firestore
+from google.cloud.firestore_v1.base_query import FieldFilter
+from google.oauth2 import service_account
+from dotenv import load_dotenv
+
+# Core & Auth
 from core.database import get_db
 from core.auth import verify_firebase_token
 from core.utils import register_action_log
 
-# Import English models & Schemas
-from models import *
-from schemas.validation import CheckPhoneSchema, PinRequestSchema, VerifyPinSchema, LinkReferralRequest
+# Models & Schemas
+from models import (
+    WhatsAppAuthPin, ReferralCode, Establishment, 
+    UsageAuditLog, AppNotification
+)
+from schemas.validation import (
+    CheckPhoneSchema, PinRequestSchema, 
+    VerifyPinSchema, LinkReferralRequest
+)
 from services.whatsapp_service import WhatsAppService
-import httpx
 
 load_dotenv()
 
@@ -165,7 +168,7 @@ async def validate_and_activate(
 ):
     user_id = str(token_data.get('uid'))
     
-    # 1. Fetch Records (Core Validation)
+    # 1. Fetch Records
     record = db.query(WhatsAppAuthPin).filter(WhatsAppAuthPin.id == user_id).first()
     if not record:
         raise HTTPException(status_code=404, detail="RECORD_NOT_FOUND")
@@ -173,37 +176,41 @@ async def validate_and_activate(
     if record.is_activated:
         raise HTTPException(status_code=400, detail="ALREADY_ACTIVATED")
 
-    # 2. Security Checks (Fail Fast)
+    # 2. Security Checks
     if record.associated_phone != data.phone:
         await fire_security_webhook("PHONE_MISMATCH", user_id, {"got": data.phone}, request)
         raise HTTPException(status_code=403, detail="SECURITY_PHONE_MISMATCH")
 
-    # 3. Referral Validation (Optimized: Reusable Object)
+    # 3. Referral Validation
     ref_record = None
     if data.referred_by:
-        ref_record = db.query(ReferralCode).filter(ReferralCode.code == data.referred_by).first()
+        # Limpieza del código para evitar fallos por espacios o mayúsculas
+        clean_code = "".join(data.referred_by.split()).lower()
+        ref_record = db.query(ReferralCode).filter(ReferralCode.code == clean_code).first()
         
         if not ref_record:
             await fire_security_webhook("INVALID_REF_CODE", user_id, {"code": data.referred_by}, request)
             raise HTTPException(status_code=403, detail="INVALID_REFERRAL_CODE")
         
-        # Security duplicate check
         if user_id in (ref_record.users_list or []):
             await fire_security_webhook("DUPLICATE_REF_CLAIM", user_id, {"ref_id": ref_record.id}, request)
             raise HTTPException(status_code=403, detail="REFERRAL_ALREADY_CLAIMED")
 
-    # 4. PIN & Attempts Logic
+    # 4. PIN & Attempts Logic (CORREGIDO)
     attempts = list(record.validation_attempts or [])
     if len(attempts) >= 3:
         raise HTTPException(status_code=429, detail="TOO_MANY_ATTEMPTS")
 
     if record.pin != data.pin:
         attempts.append(data.pin)
+        # Forzamos la detección de cambio en SQLAlchemy
         record.validation_attempts = attempts
-        db.commit() # Save attempt even if it fails
+        flag_modified(record, "validation_attempts")
+        
+        db.commit() # Guardamos el intento fallido
         raise HTTPException(status_code=400, detail={"msg": "INVALID_PIN", "attempts": len(attempts)})
 
-    # --- ACTIVATION BLOCK (Transactional) ---
+    # --- ACTIVATION BLOCK ---
     try:
         reward = 20 if ref_record else 10
         ref_id = ref_record.id if ref_record else None
@@ -212,30 +219,30 @@ async def validate_and_activate(
         if not update_user_reminders(user_id, reward):
             raise Exception("FIRESTORE_SYNC_FAILED")
 
-        # B. SQL: Update Referral Table (Atomic Array Update)
+        # B. SQL: Update Referral Table (Atomic Update)
         if ref_record:
             ref_record.user_count += 1
-            # Assignment creates a new list object so SQLAlchemy tracks the change
             new_users_list = list(ref_record.users_list or [])
             new_users_list.append(user_id)
             ref_record.users_list = new_users_list
+            flag_modified(ref_record, "users_list")
 
-        # C. SQL: Update Establishment (Bulk Update pattern)
+        # C. SQL: Update Establishment
         db.query(Establishment).filter(Establishment.id == user_id).update({
             "country": data.country,
             "whatsapp": str(data.phone),
-            "created_at": datetime.utcnow(),
-            "referred_by": ref_id, # Internal ID
+            "created_at": datetime.now(timezone.utc),
+            "referred_by": ref_id,
             "available_credits": Establishment.available_credits + reward,
             "is_suspended": False
         }, synchronize_session=False)
 
-        # D. SQL: Audit Logging
+        # D. SQL: Audit Logging (Corregido ref_id a string)
         db.add(UsageAuditLog(
             establishment_id=user_id, 
             condition="top-up", 
             value=reward, 
-            observations=f"Welcome bonus{' (Ref: ' + ref_id + ')' if ref_id else ''}"
+            observations=f"Welcome bonus{' (Ref: ' + str(ref_id) + ')' if ref_id else ''}"
         ))
         
         # E. Finalize PIN
