@@ -27,7 +27,7 @@ from schemas.validation import (
     VerifyPinSchema, LinkReferralRequest
 )
 from services.whatsapp_service import WhatsAppService
-
+import traceback
 load_dotenv()
 
 
@@ -168,58 +168,56 @@ async def validate_and_activate(
 ):
     user_id = str(token_data.get('uid'))
     
-    # 1. Fetch Records
-    record = db.query(WhatsAppAuthPin).filter(WhatsAppAuthPin.id == user_id).first()
-    if not record:
-        raise HTTPException(status_code=404, detail="RECORD_NOT_FOUND")
-    
-    if record.is_activated:
-        raise HTTPException(status_code=400, detail="ALREADY_ACTIVATED")
-
-    # 2. Security Checks
-    if record.associated_phone != data.phone:
-        await fire_security_webhook("PHONE_MISMATCH", user_id, {"got": data.phone}, request)
-        raise HTTPException(status_code=403, detail="SECURITY_PHONE_MISMATCH")
-
-    # 3. Referral Validation
-    ref_record = None
-    if data.referred_by:
-        # Limpieza del código para evitar fallos por espacios o mayúsculas
-        clean_code = "".join(data.referred_by.split()).lower()
-        ref_record = db.query(ReferralCode).filter(ReferralCode.code == clean_code).first()
-        
-        if not ref_record:
-            await fire_security_webhook("INVALID_REF_CODE", user_id, {"code": data.referred_by}, request)
-            raise HTTPException(status_code=403, detail="INVALID_REFERRAL_CODE")
-        
-        if user_id in (ref_record.users_list or []):
-            await fire_security_webhook("DUPLICATE_REF_CLAIM", user_id, {"ref_id": ref_record.id}, request)
-            raise HTTPException(status_code=403, detail="REFERRAL_ALREADY_CLAIMED")
-
-    # 4. PIN & Attempts Logic (CORREGIDO)
-    attempts = list(record.validation_attempts or [])
-    if len(attempts) >= 3:
-        raise HTTPException(status_code=429, detail="TOO_MANY_ATTEMPTS")
-
-    if record.pin != data.pin:
-        attempts.append(data.pin)
-        # Forzamos la detección de cambio en SQLAlchemy
-        record.validation_attempts = attempts
-        flag_modified(record, "validation_attempts")
-        
-        db.commit() # Guardamos el intento fallido
-        raise HTTPException(status_code=400, detail={"msg": "INVALID_PIN", "attempts": len(attempts)})
-
-    # --- ACTIVATION BLOCK ---
     try:
+        # 1. Obtener registros (Core Validation)
+        record = db.query(WhatsAppAuthPin).filter(WhatsAppAuthPin.id == user_id).first()
+        if not record:
+            raise HTTPException(status_code=404, detail="RECORD_NOT_FOUND")
+        
+        if record.is_activated:
+            raise HTTPException(status_code=400, detail="ALREADY_ACTIVATED")
+
+        # 2. Seguridad: Verificación de teléfono
+        if record.associated_phone != data.phone:
+            await fire_security_webhook("PHONE_MISMATCH", user_id, {"got": data.phone}, request)
+            raise HTTPException(status_code=403, detail="SECURITY_PHONE_MISMATCH")
+
+        # 3. Validación de Referido
+        ref_record = None
+        if data.referred_by:
+            clean_code = "".join(data.referred_by.split()).lower()
+            ref_record = db.query(ReferralCode).filter(ReferralCode.code == clean_code).first()
+            
+            if not ref_record:
+                await fire_security_webhook("INVALID_REF_CODE", user_id, {"code": data.referred_by}, request)
+                raise HTTPException(status_code=403, detail="INVALID_REFERRAL_CODE")
+            
+            if user_id in (ref_record.users_list or []):
+                await fire_security_webhook("DUPLICATE_REF_CLAIM", user_id, {"ref_id": ref_record.id}, request)
+                raise HTTPException(status_code=403, detail="REFERRAL_ALREADY_CLAIMED")
+
+        # 4. Lógica de PIN e Intentos (CORREGIDO para guardar en DB)
+        attempts = list(record.validation_attempts or [])
+        if len(attempts) >= 3:
+            raise HTTPException(status_code=429, detail="TOO_MANY_ATTEMPTS")
+
+        if record.pin != data.pin:
+            attempts.append(data.pin)
+            record.validation_attempts = attempts
+            flag_modified(record, "validation_attempts") # Forzamos detección de cambio
+            
+            db.commit() # Guardamos el intento fallido inmediatamente
+            raise HTTPException(status_code=400, detail={"msg": "INVALID_PIN", "attempts": len(attempts)})
+
+        # --- BLOQUE DE ACTIVACIÓN (Transaccional) ---
         reward = 20 if ref_record else 10
         ref_id = ref_record.id if ref_record else None
         
-        # A. External Sync (Firestore)
+        # A. Sincronización con Firestore
         if not update_user_reminders(user_id, reward):
             raise Exception("FIRESTORE_SYNC_FAILED")
 
-        # B. SQL: Update Referral Table (Atomic Update)
+        # B. SQL: Actualizar tabla de Referidos (Atomic Array Update)
         if ref_record:
             ref_record.user_count += 1
             new_users_list = list(ref_record.users_list or [])
@@ -227,7 +225,7 @@ async def validate_and_activate(
             ref_record.users_list = new_users_list
             flag_modified(ref_record, "users_list")
 
-        # C. SQL: Update Establishment
+        # C. SQL: Actualizar Establecimiento
         db.query(Establishment).filter(Establishment.id == user_id).update({
             "country": data.country,
             "whatsapp": str(data.phone),
@@ -237,7 +235,7 @@ async def validate_and_activate(
             "is_suspended": False
         }, synchronize_session=False)
 
-        # D. SQL: Audit Logging (Corregido ref_id a string)
+        # D. SQL: Audit Logging (Corregido ref_id a string para evitar errores de tipo)
         db.add(UsageAuditLog(
             establishment_id=user_id, 
             condition="top-up", 
@@ -245,16 +243,25 @@ async def validate_and_activate(
             observations=f"Welcome bonus{' (Ref: ' + str(ref_id) + ')' if ref_id else ''}"
         ))
         
-        # E. Finalize PIN
+        # E. Finalizar PIN
         record.is_activated = True
         
         db.commit()
         return {"complete": True, "reward_applied": reward}
 
+    except HTTPException as he:
+        # Re-lanzamos errores controlados (400, 403, 404) para que el cliente los vea
+        raise he
     except Exception as e:
         db.rollback()
+        # IMPRESIÓN DETALLADA EN CONSOLA PARA DEBUGGING
+        print("\n" + "!"*60)
+        print(f"🚨 ERROR CRÍTICO EN VALIDATE-AND-ACTIVATE")
+        print(f"❌ Traceback:\n{traceback.format_exc()}")
+        print("!"*60 + "\n")
+        
         await fire_security_webhook("ACTIVATION_ERROR", user_id, {"error": str(e)}, request)
-        raise HTTPException(status_code=500, detail=f"INTERNAL_SERVER_ERROR: {str(e)}")
+        raise HTTPException(status_code=500, detail="INTERNAL_SERVER_ERROR")
 
 # --- 4. LINK REFERRAL CODE ---
 @router.post("/link-referral")
