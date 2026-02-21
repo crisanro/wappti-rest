@@ -22,6 +22,7 @@ class Establishment(Base):
     virtual_assistant_signature = Column(Text)
     header_signature = Column(Text)
     available_credits = Column(BigInteger, default=0)
+    language = Column(Text)
     # Relaciones
     profiles = relationship("Profile", back_populates="establishment", cascade="all, delete-orphan")
     credits = relationship("EstablishmentCredit", back_populates="establishment", uselist=False, cascade="all, delete-orphan")
@@ -98,4 +99,5 @@ class WhatsAppAuthPin(Base):
     
     # THIS WAS MISSING:
     # It must be defined as an ARRAY of BigIntegers to store the failed PINs
+
     validation_attempts = Column(ARRAY(BigInteger), default=[])
