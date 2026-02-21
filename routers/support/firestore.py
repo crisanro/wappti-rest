@@ -144,22 +144,24 @@ async def check_firestore_phone(
     establishment_id = str(token_data.get('uid'))
     
     try:
-        # 1. Consultar Firestore (Usando la nueva sintaxis FieldFilter)
+        # 1. Consultar Firestore (Sintaxis corregida)
         users_ref = db_firestore.collection("users")
-        # Cambiamos .where por .filter para eliminar el UserWarning
-        query = users_ref.filter(filter=FieldFilter("phone_number", "==", phone)).limit(1).get()
+        
+        # Usamos .where(filter=FieldFilter(...))
+        # Esto cumple con la nueva normativa y elimina el UserWarning
+        query = users_ref.where(filter=FieldFilter("phone_number", "==", phone)).limit(1).get()
         
         is_unique = len(query) == 0
         status_msg = "SUCCESS_UNIQUE" if is_unique else "REJECTED_DUPLICATE"
 
-        # 2. Notificación proactiva (Si el teléfono está duplicado, te avisamos)
+        # 2. Notificación proactiva
         if not is_unique:
             await notify_log("ALERT_PHONE_DUPLICATE_ATTEMPT", establishment_id, {
                 "phone_queried": phone,
                 "ip": request.client.host
             })
 
-        # 3. Auditoría en SQL (SystemAudit)
+        # 3. Auditoría en SQL
         new_log = SystemAudit(
             establishment_id=establishment_id,
             action="PHONE_UNIQUENESS_CHECK",
@@ -167,7 +169,7 @@ async def check_firestore_phone(
             path=request.url.path,
             payload={"phone_queried": phone, "result": status_msg},
             status_code=200 if is_unique else 400,
-            created_at=datetime.now(timezone.utc) # Actualizado a timezone-aware
+            created_at=datetime.now(timezone.utc)
         )
         db.add(new_log)
         db.commit()
@@ -189,7 +191,7 @@ async def check_firestore_phone(
         raise he
     except Exception as e:
         db.rollback()
-        # Notificación de error crítico al webhook
+        # El webhook de n8n te avisará si esto vuelve a fallar
         await notify_log("ERROR_CHECK_PHONE_SYSTEM", establishment_id, {
             "error": str(e),
             "trace": traceback.format_exc()[-500:]
