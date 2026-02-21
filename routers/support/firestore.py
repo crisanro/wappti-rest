@@ -26,7 +26,7 @@ from schemas.validation import (
     CheckPhoneSchema, PinRequestSchema, 
     VerifyPinSchema, LinkReferralRequest
 )
-from services.whatsapp_service import WhatsAppService
+
 import traceback
 
 # --- CONFIGURACIÓN ---
