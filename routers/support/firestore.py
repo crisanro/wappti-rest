@@ -220,28 +220,28 @@ async def validate_and_activate(
 
         # 2. Seguridad: Verificación de teléfono
         if record.associated_phone != data.phone:
-            # Notificamos intento de fraude/error de teléfono
             await notify_log("ALERT_PHONE_MISMATCH_ACTIVATION", user_id, {
                 "expected": record.associated_phone,
                 "got": data.phone
             })
             raise HTTPException(status_code=403, detail="SECURITY_PHONE_MISMATCH")
 
-        # 3. Validación de Referido (Búsqueda por ID según tu estructura actual)
+        # 3. Validación de Referido (SOLO EXISTENCIA)
         ref_record = None
         if data.referred_by:
+            # Validamos que el ID del referido pertenezca a un código real en la DB
             ref_record = db.query(ReferralCode).filter(ReferralCode.id == data.referred_by).first()
             
             if not ref_record:
+                # Si el ID no existe, es un intento de usar un código inválido
                 await notify_log("ALERT_INVALID_REF_ID", user_id, {"id_sent": data.referred_by})
-                raise HTTPException(status_code=403, detail="INVALID_REFERRAL_ID")
+                raise HTTPException(status_code=400, detail="INVALID_REFERRAL_CODE")
             
-            # Anti-fraude: Ya reclamado
-            if user_id in (ref_record.users_list or []):
-                await notify_log("ALERT_DUPLICATE_REF_CLAIM", user_id, {"ref_id": ref_record.id})
-                raise HTTPException(status_code=403, detail="REFERRAL_ALREADY_CLAIMED")
+            # (Opcional) Evitar que se refiera a sí mismo si eso rompe tu lógica
+            if ref_record.id == user_id:
+                raise HTTPException(status_code=400, detail="CANNOT_REFER_YOURSELF")
 
-        # 4. Lógica de PIN e Intentos (CORREGIDO con flag_modified)
+        # 4. Lógica de PIN e Intentos
         attempts = list(record.validation_attempts or [])
         if len(attempts) >= 3:
             raise HTTPException(status_code=429, detail="TOO_MANY_ATTEMPTS")
@@ -251,28 +251,27 @@ async def validate_and_activate(
             record.validation_attempts = attempts
             flag_modified(record, "validation_attempts")
             db.commit() 
-            
-            # Notificamos PIN incorrecto (opcional para monitoreo de fricción)
-            await notify_log("LOG_PIN_FAILED", user_id, {"attempts": len(attempts)})
             raise HTTPException(status_code=400, detail={"msg": "INVALID_PIN", "attempts": len(attempts)})
 
         # --- BLOQUE DE ACTIVACIÓN (Transaccional) ---
         reward = 20 if ref_record else 10
         ref_id = ref_record.id if ref_record else None
         
-        # A. Sincronización Firestore
+        # A. Sincronización Firestore (Créditos iniciales)
         if not update_user_reminders(user_id, reward):
             raise Exception("FIRESTORE_SYNC_FAILED")
 
-        # B. SQL: Actualizar Referente
+        # B. SQL: Actualizar Contador del dueño del código
         if ref_record:
             ref_record.user_count = (ref_record.user_count or 0) + 1
+            # Añadimos a la lista para mantener registro, pero ya no bloqueamos arriba
             new_list = list(ref_record.users_list or [])
-            new_list.append(user_id)
-            ref_record.users_list = new_list
-            flag_modified(ref_record, "users_list")
+            if user_id not in new_list:
+                new_list.append(user_id)
+                ref_record.users_list = new_list
+                flag_modified(ref_record, "users_list")
 
-        # C. SQL: Update Establishment
+        # C. SQL: Actualizar Establecimiento
         db.query(Establishment).filter(Establishment.id == user_id).update({
             "country": data.country,
             "whatsapp": str(data.phone),
@@ -290,16 +289,9 @@ async def validate_and_activate(
             observations=f"Welcome bonus{' (Ref: ' + str(ref_id) + ')' if ref_id else ''}"
         ))
         
-        # E. Finalizar PIN
+        # E. Finalizar proceso de activación
         record.is_activated = True
-        
         db.commit()
-
-        # Notificación de éxito TOTAL
-        await notify_log("LOG_ACTIVATION_SUCCESS", user_id, {
-            "reward": reward,
-            "has_referral": ref_id is not None
-        })
 
         return {"complete": True, "reward_applied": reward}
 
@@ -307,14 +299,8 @@ async def validate_and_activate(
         raise he
     except Exception as e:
         db.rollback()
-        # Notificación de error crítico
-        await notify_log("ERROR_ACTIVATION_SYSTEM", user_id, {
-            "error": str(e),
-            "trace": traceback.format_exc()[-500:]
-        })
-        print(f"🚨 ACTIVATION ERROR:\n{traceback.format_exc()}")
+        await notify_log("ERROR_ACTIVATION_SYSTEM", user_id, {"error": str(e)})
         raise HTTPException(status_code=500, detail="INTERNAL_SERVER_ERROR")
-
 
 # --- 4. LINK REFERRAL CODE ---
 @router.post("/link-referral")
