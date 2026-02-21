@@ -184,7 +184,7 @@ async def validate_and_activate(
     # 3. Referral Validation (Optimized: Reusable Object)
     ref_record = None
     if data.referred_by:
-        ref_record = db.query(ReferralCode).filter(ReferralCode.code == data.referred_by).first()
+        ref_record = db.query(ReferralCode).filter(ReferralCode.id == data.referred_by).first()
         
         if not ref_record:
             await fire_security_webhook("INVALID_REF_CODE", user_id, {"code": data.referred_by}, request)
