@@ -182,21 +182,30 @@ async def validate_and_activate(
             await fire_security_webhook("PHONE_MISMATCH", user_id, {"got": data.phone}, request)
             raise HTTPException(status_code=403, detail="SECURITY_PHONE_MISMATCH")
 
-        # 3. Validación de Referido
+        # 3. Validación de Referido (Optimizado para buscar por ID o Código)
         ref_record = None
         if data.referred_by:
-            clean_code = "".join(data.referred_by.split()).lower()
-            ref_record = db.query(ReferralCode).filter(ReferralCode.code == clean_code).first()
+            ref_input = str(data.referred_by).strip()
+            
+            # Si el input es numérico, buscamos directamente por ID
+            if ref_input.isdigit():
+                ref_record = db.query(ReferralCode).filter(ReferralCode.id == int(ref_input)).first()
+            
+            # Si no se encontró por ID o no era número, buscamos por el código (slug)
+            if not ref_record:
+                clean_code = "".join(ref_input.split()).lower()
+                ref_record = db.query(ReferralCode).filter(ReferralCode.code == clean_code).first()
             
             if not ref_record:
                 await fire_security_webhook("INVALID_REF_CODE", user_id, {"code": data.referred_by}, request)
                 raise HTTPException(status_code=403, detail="INVALID_REFERRAL_CODE")
             
+            # Verificación de duplicados
             if user_id in (ref_record.users_list or []):
                 await fire_security_webhook("DUPLICATE_REF_CLAIM", user_id, {"ref_id": ref_record.id}, request)
                 raise HTTPException(status_code=403, detail="REFERRAL_ALREADY_CLAIMED")
 
-        # 4. Lógica de PIN e Intentos (CORREGIDO para guardar en DB)
+        # 4. Lógica de PIN e Intentos
         attempts = list(record.validation_attempts or [])
         if len(attempts) >= 3:
             raise HTTPException(status_code=429, detail="TOO_MANY_ATTEMPTS")
@@ -204,9 +213,8 @@ async def validate_and_activate(
         if record.pin != data.pin:
             attempts.append(data.pin)
             record.validation_attempts = attempts
-            flag_modified(record, "validation_attempts") # Forzamos detección de cambio
-            
-            db.commit() # Guardamos el intento fallido inmediatamente
+            flag_modified(record, "validation_attempts")
+            db.commit() 
             raise HTTPException(status_code=400, detail={"msg": "INVALID_PIN", "attempts": len(attempts)})
 
         # --- BLOQUE DE ACTIVACIÓN (Transaccional) ---
@@ -217,7 +225,7 @@ async def validate_and_activate(
         if not update_user_reminders(user_id, reward):
             raise Exception("FIRESTORE_SYNC_FAILED")
 
-        # B. SQL: Actualizar tabla de Referidos (Atomic Array Update)
+        # B. SQL: Actualizar tabla de Referidos
         if ref_record:
             ref_record.user_count += 1
             new_users_list = list(ref_record.users_list or [])
@@ -235,26 +243,25 @@ async def validate_and_activate(
             "is_suspended": False
         }, synchronize_session=False)
 
-        # D. SQL: Audit Logging (Corregido ref_id a string para evitar errores de tipo)
+        # D. SQL: Audit Logging
+        observations = f"Welcome bonus" + (f" (Ref: {ref_id})" if ref_id else "")
         db.add(UsageAuditLog(
             establishment_id=user_id, 
             condition="top-up", 
             value=reward, 
-            observations=f"Welcome bonus{' (Ref: ' + str(ref_id) + ')' if ref_id else ''}"
+            observations=observations
         ))
         
         # E. Finalizar PIN
         record.is_activated = True
         
         db.commit()
-        return {"complete": True, "reward_applied": reward}
+        return {"complete": True, "reward_applied": reward, "referral_id": ref_id}
 
     except HTTPException as he:
-        # Re-lanzamos errores controlados (400, 403, 404) para que el cliente los vea
         raise he
     except Exception as e:
         db.rollback()
-        # IMPRESIÓN DETALLADA EN CONSOLA PARA DEBUGGING
         print("\n" + "!"*60)
         print(f"🚨 ERROR CRÍTICO EN VALIDATE-AND-ACTIVATE")
         print(f"❌ Traceback:\n{traceback.format_exc()}")
