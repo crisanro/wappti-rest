@@ -1,6 +1,7 @@
 import os
 from google.cloud import firestore
 from google.oauth2 import service_account
+from google.cloud.firestore_v1.base_query import FieldFilter
 from dotenv import load_dotenv
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from core.auth import verify_firebase_token
@@ -326,3 +327,70 @@ def link_referral_code(
         db.rollback()
         print(f"🚨 REFERRAL ERROR: {str(e)}")
         raise HTTPException(status_code=500, detail="internal_server_error")
+
+@router.post("/reset-registration-phone")
+async def reset_registration_phone(
+    request: Request,
+    db: Session = Depends(get_db),
+    token_data: dict = Depends(verify_firebase_token)
+):
+    """
+    Permite al usuario resetear su número de teléfono de registro por única vez.
+    Limpia SQL (whatsapp_auth_pins) y resetea Firestore (users).
+    """
+    user_id = str(token_data.get('uid'))
+
+    try:
+        # 1. Verificar en Firestore si ya usó su oportunidad
+        user_ref = db_firestore.collection("users").document(user_id)
+        user_doc = user_ref.get()
+
+        if not user_doc.exists:
+            raise HTTPException(status_code=404, detail="USER_NOT_FOUND")
+
+        user_data = user_doc.to_dict()
+        
+        # Comprobar el "candado" de cambio único
+        if user_data.get("CambNumRegistro") is True:
+            raise HTTPException(
+                status_code=403, 
+                detail="PHONE_CHANGE_ALREADY_USED"
+            )
+
+        # 2. Operación en Postgres: Eliminar el PIN pendiente
+        # Esto permite que el número viejo quede "libre" o simplemente se descarte el proceso actual
+        pin_record = db.query(WhatsAppAuthPin).filter(WhatsAppAuthPin.id == user_id).first()
+        if pin_record:
+            db.delete(pin_record)
+
+        # 3. Operación en Firestore: Resetear campos y activar el candado
+        user_ref.update({
+            "phone_number": "",           # Limpiamos el número equivocado
+            "phone_validate": False,      # Por si acaso estaba en proceso
+            "CambNumRegistro": True,      # Marcamos que ya usó su única oportunidad
+            "last_reset_at": datetime.now(timezone.utc)
+        })
+
+        # 4. Audit Log
+        register_action_log(
+            db=db,
+            establishment_id=user_id,
+            action="REGISTRATION_PHONE_RESET",
+            method="POST",
+            path=request.url.path,
+            payload={"msg": "User reset their registration phone number"},
+            request=request
+        )
+
+        db.commit()
+        return {
+            "status": "success", 
+            "message": "Registration phone has been reset. You can now register a new number."
+        }
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        db.rollback()
+        print(f"🚨 RESET PHONE ERROR: {str(e)}")
+        raise HTTPException(status_code=500, detail="INTERNAL_SERVER_ERROR_ON_RESET")
