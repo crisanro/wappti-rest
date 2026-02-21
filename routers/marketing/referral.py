@@ -1,7 +1,7 @@
 import re
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, text
 from datetime import datetime, timedelta, timezone
 import traceback
 import pytz
@@ -131,29 +131,129 @@ def get_referral_balance(
 
 # --- ACCOUNTS & WITHDRAWALS ---
 
-@router.post("/payout-methods")
-def add_payout_method(data: PayoutMethodCreate, db: Session = Depends(get_db)):
-    new_method = ReferralPayoutMethod(**data.model_dump())
-    db.add(new_method)
-    db.commit()
-    return {"status": "success", "message": "Payout method saved"}
+@router.post("/payout-methods", status_code=status.HTTP_201_CREATED)
+def add_payout_method(
+    data: PayoutMethodCreate, 
+    db: Session = Depends(get_db),
+    token_data: dict = Depends(verify_firebase_token)
+):
+    """
+    Registra un nuevo método de pago validando que no sea un duplicado.
+    """
+    my_id = token_data.get('uid')
+
+    # 1. Normalizamos los datos para evitar "Paypal" vs "paypal"
+    platform_name = data.platform.strip().upper()
+    details = data.account_details.strip().lower()
+
+    # 2. Verificamos si ya existe exactamente lo mismo para este local
+    existing = db.query(ReferralPayoutMethod).filter(
+        ReferralPayoutMethod.establishment_id == my_id,
+        ReferralPayoutMethod.platform.ilike(platform_name), # Case-insensitive
+        ReferralPayoutMethod.account_details.ilike(details) # Case-insensitive
+    ).first()
+
+    if existing:
+        raise HTTPException(
+            status_code=400, 
+            detail="payout_method_already_exists"
+        )
+
+    try:
+        # 3. Si no existe, procedemos a crear
+        new_method = ReferralPayoutMethod(
+            establishment_id=my_id,
+            platform=platform_name, # Guardamos normalizado
+            account_details=details # Guardamos normalizado
+        )
+        
+        db.add(new_method)
+        db.commit()
+        db.refresh(new_method)
+
+        return {
+            "status": "success", 
+            "message": "Payout method saved",
+            "method_id": new_method.id
+        }
+
+    except Exception as e:
+        db.rollback()
+        print(f"❌ Error al guardar método de pago: {e}")
+        raise HTTPException(status_code=500, detail="error_saving_payout_method")
+    
 
 
 @router.get("/payout-methods")
-def list_payout_methods(establishment_id: str, db: Session = Depends(get_db)):
-    return db.query(ReferralPayoutMethod).filter(
-        ReferralPayoutMethod.establishment_id == establishment_id
+def list_payout_methods(
+    db: Session = Depends(get_db),
+    token_data: dict = Depends(verify_firebase_token) # Extraemos la identidad del Token
+):
+    """
+    Lista los métodos de pago del establecimiento autenticado.
+    """
+    my_id = token_data.get('uid')
+    
+    methods = db.query(ReferralPayoutMethod).filter(
+        ReferralPayoutMethod.establishment_id == my_id
     ).order_by(ReferralPayoutMethod.created_at.desc()).all()
+    
+    return methods
 
 
 @router.delete("/payout-methods/{method_id}")
-def delete_payout_method(method_id: int, db: Session = Depends(get_db)):
-    method = db.query(ReferralPayoutMethod).filter(ReferralPayoutMethod.id == method_id).first()
+def delete_payout_method(
+    method_id: int, 
+    db: Session = Depends(get_db),
+    token_data: dict = Depends(verify_firebase_token)
+):
+    """
+    Elimina un método de pago solo si le pertenece al usuario 
+    y no tiene retiros asociados.
+    """
+    my_id = token_data.get('uid')
+
+    # 1. Buscar el método asegurando que pertenezca al establecimiento (Seguridad JWT)
+    method = db.query(ReferralPayoutMethod).filter(
+        ReferralPayoutMethod.id == method_id,
+        ReferralPayoutMethod.establishment_id == my_id
+    ).first()
+
     if not method:
-        raise HTTPException(status_code=404, detail="Account not found")
-    db.delete(method)
-    db.commit()
-    return {"status": "success", "message": "Method deleted"}
+        raise HTTPException(
+            status_code=404, 
+            detail="payout_method_not_found"
+        )
+
+    # 2. Revisar si existen retiros asociados en 'referral_withdrawals'
+    # Usamos text() por si no tienes el modelo definido aún o para mayor rapidez
+    check_usage = text("""
+        SELECT 1 FROM referral_withdrawals 
+        WHERE associated_payment_id = :m_id 
+        LIMIT 1
+    """)
+    usage_exists = db.execute(check_usage, {"m_id": method_id}).first()
+
+    if usage_exists:
+        raise HTTPException(
+            status_code=400, 
+            detail="cannot_delete_method_with_active_withdrawals"
+        )
+
+    try:
+        # 3. Proceder con la eliminación
+        db.delete(method)
+        db.commit()
+        
+        return {
+            "status": "success", 
+            "message": "Method deleted"
+        }
+
+    except Exception as e:
+        db.rollback()
+        print(f"❌ Error al eliminar método: {e}")
+        raise HTTPException(status_code=500, detail="error_deleting_payout_method")
 
 
 @router.post("/withdrawals")

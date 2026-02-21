@@ -111,10 +111,3 @@ def get_tutorial_link(link_id: int, db: Session = Depends(get_db)):
         )
     
     return link
-
-@router.get("/test-speed")
-async def test_speed():
-    start_time = time.time()
-    # Simulamos un proceso ultra rápido sin DB
-    execution_time = (time.time() - start_time) * 1000
-    return {"message": "FastAPI is alive", "server_time_ms": execution_time}

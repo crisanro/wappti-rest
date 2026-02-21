@@ -1,8 +1,11 @@
-from fastapi import FastAPI, Request, HTTPException, Header
+from fastapi import FastAPI, Request, HTTPException, Header, status
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from models import SystemBlockedIP
 from core.database import SessionLocal
+
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 # Asegúrate de importar SessionLocal y BlockedIP de tus archivos
 # from database import SessionLocal 
 # from models import BlockedIP
@@ -18,7 +21,8 @@ from routers.establishments import base as base_estab
 from routers.establishments import activity, financials, profile, tags
 from routers.integrations import kipu
 from routers.marketing import marketing, referral
-from routers.support import support, validation
+from routers.support import support, validation, firestore
+from routers.admin import appointments as admin_appointments
 
 # --- 1. CACHE DE SEGURIDAD ---
 blocked_ips_cache = set()
@@ -67,6 +71,31 @@ app = FastAPI(
     description="Central connection point for business management and automation",
     version="0.0.1"
 )
+
+
+# =================================================================
+# 🚀 PEGA EL EXCEPTION HANDLER AQUÍ (Justo después de 'app')
+# =================================================================
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """
+    Este bloque atrapará el error 422 y te mostrará en la consola
+    exactamente qué campo falló y qué datos envió el cliente.
+    """
+    print("\n" + "="*50)
+    print("❌ VALIDATION ERROR DETECTED")
+    print(f"📝 Errors: {exc.errors()}")
+    print(f"📦 Body Sent: {exc.body}")
+    print("="*50 + "\n")
+    
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={
+            "detail": exc.errors(), 
+            "body_received": exc.body
+        },
+    )
+# =================================================================
 
 # --- 4. EVENTOS DE SISTEMA ---
 @app.on_event("startup")
@@ -134,9 +163,12 @@ app.include_router(notifications.router, prefix="/notifications", tags=["WhatsAp
 
 app.include_router(support.router, prefix="/support", tags=["Support & Feedback"])
 app.include_router(validation.router, prefix="/validation", tags=["Validation"])
+app.include_router(firestore.router, tags=["Validation"])
 
-# --- FUTURE ADMIN SECTION ---
-# @app.include_router(admin.router, prefix="/admin", tags=["Super Admin"], dependencies=[Depends(verify_admin_key)])
+# --- ADMIN SECTION ---
+# No es necesario pasar Depends aquí de nuevo porque ya lo pusimos en la definición del Router
+app.include_router(admin_appointments.router)
+
 
 # 7. Enhanced Health Check
 @app.get("/", tags=["System"])
@@ -145,7 +177,6 @@ def health_check():
         "status": "online", 
         "version": app.version, 
         "server_time": "UTC",
-        "documentation": "/docs"
     }
 
 # Note: The 'registrar_log_actividad' function has been moved to core/utils.py 

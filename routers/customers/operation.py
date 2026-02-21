@@ -31,26 +31,42 @@ def get_operation_history(
     db: Session = Depends(get_db),
     token_data: dict = Depends(verify_firebase_token)
 ):
+    # 1. Convert strings to datetime early for validation
+    try:
+        start_dt_naive = datetime.strptime(start_date[:10], "%Y-%m-%d")
+        end_dt_naive = datetime.strptime(end_date[:10], "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid_date_format_use_YYYY_MM_DD")
+
+    # 2. Validate the date range (max 45 days and logical order)
+    delta_days = (end_dt_naive - start_dt_naive).days
+    
+    if delta_days < 0:
+        raise HTTPException(status_code=400, detail="start_date_cannot_be_after_end_date")
+        
+    if delta_days > 45:
+        # Aquí está el error exacto que solicitaste
+        raise HTTPException(status_code=400, detail="range_too_long_max_45_days")
+
     try:
         establishment_id = token_data.get('uid')
         local_tz = pytz.timezone(timezone_name)
 
-        # 1. Ajuste de límites: esto asegura que el registro de las 11:55 PM aparezca
-        def get_utc_boundary(date_str, is_end=False):
-            dt = datetime.strptime(date_str[:10], "%Y-%m-%d")
+        # 3. Boundary adjustment
+        def get_utc_boundary(dt, is_end=False):
             if is_end:
-                # Vamos hasta el último microsegundo del día del usuario
+                # Go to the very last microsecond of the user's day
                 dt = dt.replace(hour=23, minute=59, second=59, microsecond=999999)
             else:
                 dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
             
-            # Localizamos en Guayaquil y pasamos a UTC para la consulta
+            # Localize to the requested timezone and convert to UTC for querying
             return local_tz.localize(dt).astimezone(pytz.UTC)
 
-        start_dt_utc = get_utc_boundary(start_date)
-        end_dt_utc = get_utc_boundary(end_date, is_end=True)
+        start_dt_utc = get_utc_boundary(start_dt_naive)
+        end_dt_utc = get_utc_boundary(end_dt_naive, is_end=True)
 
-        # 2. Consulta
+        # 4. Database Query
         records = db.query(CustomerHistory).filter(
             and_(
                 CustomerHistory.establishment_id == establishment_id,
@@ -59,7 +75,7 @@ def get_operation_history(
             )
         ).order_by(CustomerHistory.created_at.desc()).all()
 
-        # 3. Respuesta plana con nombres originales y 'notes'
+        # 5. Flat response with original names and 'notes'
         return [
             {
                 "created_at": r.created_at.astimezone(local_tz).isoformat(),
@@ -67,15 +83,17 @@ def get_operation_history(
                 "income": float(r.income) if r.income else 0.0,
                 "profile_id": r.profile_id,
                 "customer_id": r.customer_id,
-                "notes": r.notes  # <--- Agregado
+                "notes": r.notes
             }
             for r in records
         ]
 
+    except HTTPException:
+        # Re-raise the 400 errors triggered above
+        raise
     except Exception as e:
-        print(f"Error: {e}")
-        raise HTTPException(status_code=500, detail="Error al obtener historial")
-
+        print(f"Error fetching history: {e}")
+        raise HTTPException(status_code=500, detail="internal_server_error_fetching_history")
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
 def add_service_record(

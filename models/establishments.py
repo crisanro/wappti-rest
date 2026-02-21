@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, Boolean, DateTime, BigInteger, ForeignKey, Float, func
+from sqlalchemy import Column, String, Text, Boolean, DateTime, BigInteger, ForeignKey, Float, func, ARRAY
 from sqlalchemy.orm import relationship
 from core.database import Base
 
@@ -21,7 +21,7 @@ class Establishment(Base):
     is_deleted = Column(Boolean, default=False)
     virtual_assistant_signature = Column(Text)
     header_signature = Column(Text)
-
+    available_credits = Column(BigInteger, default=0)
     # Relaciones
     profiles = relationship("Profile", back_populates="establishment", cascade="all, delete-orphan")
     credits = relationship("EstablishmentCredit", back_populates="establishment", uselist=False, cascade="all, delete-orphan")
@@ -86,7 +86,7 @@ class EstablishmentReview(Base):
 
 # Nueva Tabla: Para completar el bloque Core según tu SQL
 class WhatsAppAuthPin(Base):
-    """Vinculación técnica de WhatsApp"""
+    """WhatsApp Technical Linking"""
     __tablename__ = "whatsapp_auth_pins"
     
     id = Column(String, primary_key=True)
@@ -95,3 +95,7 @@ class WhatsAppAuthPin(Base):
     is_activated = Column(Boolean, default=False)
     send_attempts = Column(BigInteger, default=0)
     associated_phone = Column(BigInteger)
+    
+    # THIS WAS MISSING:
+    # It must be defined as an ARRAY of BigIntegers to store the failed PINs
+    validation_attempts = Column(ARRAY(BigInteger), default=[])

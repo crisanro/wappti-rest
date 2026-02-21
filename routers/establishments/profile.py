@@ -40,10 +40,18 @@ def list_staff_profiles(
 ):
     establishment_id = token_data.get('uid')
     
-    # Consultamos la base de datos
-    profiles = db.query(Profile).filter(Profile.establishment_id == establishment_id).all()
+    # En lugar de traer TODO el objeto (Select *), traemos solo lo necesario
+    profiles = db.query(
+        Profile.id,
+        Profile.name,
+        Profile.timezone,
+        Profile.message_language,
+        Profile.extra_data_1,
+        Profile.extra_data_2
+    ).filter(
+        Profile.establishment_id == establishment_id
+    ).all()
     
-    # Al tener el response_model arriba, FastAPI filtrará el establishment_id automáticamente
     return profiles
     
 

@@ -1,6 +1,7 @@
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 from datetime import datetime
+from enum import Enum
 
 # --- 1. MARKETING Y CAMPAÑAS ---
 
@@ -30,6 +31,8 @@ class WhatsAppCampaignResponse(BaseModel):
     class Config:
         from_attributes = True
 
+class UpdateCampaignResponse(BaseModel):
+    campaign_id: int
 
 # --- 2. ENVÍOS (DISPATCHES) ---
 
@@ -90,4 +93,14 @@ class PrepareCampaignSchema(BaseModel):
     campaign_id: int
     tag_id: int
 
-    
+
+
+class FollowupType(str, Enum):
+    REMINDERS = "reminders"      # Compra no completada
+    INCOMPLETE_SETUP = "incomplete_setup"          # Configuración olvidada
+    # En el futuro podrías añadir más:
+    # SUBSCRIPTION_EXPIRING = "subscription_expiring"
+    # INACTIVE_USER = "inactive_user"    
+# Esquema para recibir el tipo desde el frontend (FlutterFlow)
+class FollowupRequest(BaseModel):
+    followup_type: FollowupType # Valida automáticamente contra el Enum

@@ -90,15 +90,17 @@ def list_establishment_customers(
         print(f"Error: {e}")
         raise HTTPException(status_code=500, detail="Error al obtener la lista de clientes")
     
-
-# --- 3. CREATE NEW CUSTOMER ---
 @router.post("/", status_code=status.HTTP_201_CREATED)
 def create_customer(
-    data: CustomerCreate, # CORREGIDO: Antes UserCreate
+    data: CustomerCreate,
     request: Request,
     db: Session = Depends(get_db), 
     token_data: dict = Depends(verify_firebase_token)
 ):
+    """
+    Creates a new customer associated with the authenticated establishment.
+    Includes 'language' preference for personalized notifications.
+    """
     establishment_id = token_data.get('uid')
     
     def purify_text(value):
@@ -109,6 +111,8 @@ def create_customer(
         clean_first_name = purify_text(data.first_name)
         clean_last_name = purify_text(data.last_name)
 
+        # Create new customer instance
+        # language is automatically included via **data.model_dump()
         new_customer = Customer(
             **data.model_dump(exclude={"first_name", "last_name"}),
             first_name=clean_first_name,
@@ -121,19 +125,35 @@ def create_customer(
         db.commit()
         db.refresh(new_customer)
 
+        # Audit Log
         register_action_log(
-            db, 
+            db=db, 
             establishment_id=establishment_id, 
             action="CUSTOMER_CREATE",
             method="POST",
-            path="/customers/create",
-            payload={"new_id": new_customer.id, "name": f"{clean_first_name} {clean_last_name}"},
+            path=request.url.path,
+            payload={
+                "customer_id": new_customer.id, 
+                "name": f"{clean_first_name} {clean_last_name}",
+                "language": new_customer.language
+            },
             request=request
         )
-        return {"status": "success", "id": new_customer.id, "full_name": f"{clean_first_name} {clean_last_name}"}
+
+        return {
+            "status": "success", 
+            "id": new_customer.id, 
+            "full_name": f"{clean_first_name} {clean_last_name}",
+            "language": new_customer.language
+        }
+
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+        print(f"🚨 CUSTOMER CREATE ERROR: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+            detail="Internal server error while creating customer."
+        )
     
 
 @router.get("/{customer_id}")
@@ -201,6 +221,7 @@ def get_customer_detail(
             "next_appointment_date": format_local(next_appo.appointment_date) if next_appo else None,
             "next_appointment_reason": next_appo.reason if next_appo else None,
             "has_next_appointment": next_appo is not None,
+            "language":customer.language,
             
             # LISTA DE PERFILES DE FACTURACIÓN
             "billing_profiles": [
@@ -282,41 +303,67 @@ def get_customer_activity_summary(
 
 # --- 8. DELETE CUSTOMER ---
 @router.delete("/{customer_id}")
-def delete_customer(
-    customer_id: int, 
-    request: Request, # Necesario para el log
+def delete_customer_data(
+    customer_id: int,
     db: Session = Depends(get_db),
     token_data: dict = Depends(verify_firebase_token)
 ):
     establishment_id = token_data.get('uid')
-    
+
+    # 1. Fetch the customer and verify ownership
     customer = db.query(Customer).filter(
-        and_(Customer.id == customer_id, Customer.establishment_id == establishment_id)
+        Customer.id == customer_id, 
+        Customer.establishment_id == establishment_id
     ).first()
-    
+
     if not customer:
-        raise HTTPException(status_code=404, detail="Customer not found")
-    
-    # Guardamos info para el log antes de borrar
-    customer_name = f"{customer.first_name} {customer.last_name}"
-    
+        raise HTTPException(status_code=404, detail="CUSTOMER_NOT_FOUND")
+
+    # 2. Check for sent messages (sent records must be preserved)
+    sent_appointments = db.query(Appointment).filter(
+        Appointment.customer_id == customer_id,
+        Appointment.whatsapp_id.isnot(None),
+        Appointment.whatsapp_id != ""
+    ).all()
+
     try:
-        db.delete(customer)
+        if not sent_appointments:
+            # CASE A: No sent history. Perform a full physical delete.
+            db.delete(customer)
+            db.commit()
+            return {"status": "full_delete", "message": "all_records_permanently_removed"}
         
-        # Registramos la acción
-        register_action_log(
-            db, 
-            establishment_id=establishment_id, 
-            action="CUSTOMER_DELETE",
-            method="DELETE",
-            path=f"/customers/{customer_id}",
-            payload={"deleted_id": customer_id, "customer_name": customer_name},
-            request=request
-        )
-        
-        db.commit()
-        return {"message": "Customer deleted successfully"}
-        
+        else:
+            # CASE B: Sent history exists. Anonymize the customer and clean up.
+            
+            # 1. Delete financial "trash" (plans, debts, items)
+            db.query(CustomerPlan).filter(CustomerPlan.customer_id == customer_id).delete()
+            db.query(CustomerDebt).filter(CustomerDebt.customer_id == customer_id).delete()
+            
+            # 2. Delete appointments that were NEVER sent
+            db.query(Appointment).filter(
+                Appointment.customer_id == customer_id,
+                (Appointment.whatsapp_id == None) | (Appointment.whatsapp_id == "")
+            ).delete()
+
+            # 3. Anonymize sensitive fields in the Customer table
+            customer.first_name = "deleted_user"
+            customer.last_name = "deleted_user"
+            customer.email = f"deleted_{customer_id}@deleted.com"
+            customer.phone = "0987654321"
+            customer.notes = "anonymized_due_to_whatsapp_history_retention"
+            
+            # If you have extra fields like address or identification_number, reset them here:
+            # customer.address = None
+            # customer.tax_id = None
+
+            db.commit()
+            return {
+                "status": "anonymized", 
+                "message": "financial_records_deleted_and_user_anonymized"
+            }
+
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Error deleting customer: {str(e)}")
+        print(f"🚨 DELETE_PROCESS_ERROR: {e}")
+        raise HTTPException(status_code=500, detail="INTERNAL_SERVER_ERROR_ON_DELETE")

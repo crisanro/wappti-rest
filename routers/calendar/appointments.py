@@ -13,7 +13,7 @@ from core.utils import register_action_log
 
 # Import English models
 from models import *
-
+from fastapi.encoders import jsonable_encoder
 # Import updated schemas
 from schemas.operations import (
     CustomerHistoryCreate, 
@@ -68,8 +68,8 @@ def get_appointments(
                 raise HTTPException(status_code=400, detail="profile_id_required_for_calendar_view")
             query = query.filter(Appointment.profile_id == profile_id)
 
-        # 5. Orden Descendente (De más reciente a más antiguo)
-        appointments = query.order_by(Appointment.appointment_date.desc()).all()
+        # 5. Orden Ascendente (De más reciente a más antiguo)
+        appointments = query.order_by(Appointment.appointment_date.asc()).all()
 
         # 6. Respuesta formateada con IDs para mapeo local
         result = []
@@ -143,7 +143,7 @@ def insert_appointment(
             establishment_id=establishment_id,
             created_at=datetime.now(pytz.UTC),
             response_text="pending",
-            whatsapp_status="pending" # Aprovechamos para inicializar el status de whatsapp
+            whatsapp_status=None # Aprovechamos para inicializar el status de whatsapp
         )
 
         db.add(new_appointment)
@@ -307,7 +307,7 @@ def update_appointment(
 ):
     uid = token_data.get('uid')
 
-    # 2. Buscar la cita y verificar pertenencia
+    # 1. Buscar la cita
     appointment = db.query(Appointment).filter(
         Appointment.id == appointment_id,
         Appointment.establishment_id == uid
@@ -316,40 +316,61 @@ def update_appointment(
     if not appointment:
         raise HTTPException(status_code=404, detail="appointment_not_found")
 
-    # 3. Preparar datos para actualizar
-    update_data = data.model_dump(exclude_unset=True)
+    # 2. Extraer solo los campos que el cliente ENVIÓ en el JSON (exclude_unset=True)
+    raw_update_data = data.model_dump(exclude_unset=True)
 
-    # 4. Lógica especial si se actualiza la fecha
+    # 3. FILTRADO DINÁMICO: Eliminar los que son None o strings vacíos
+    # Esto asegura que si mandan {"name": ""} o {"note": null}, no se sobreescriba lo que ya existe
+    update_data = {
+        k: v for k, v in raw_update_data.items() 
+        if v is not None and v != ""
+    }
+
+    # Si después del filtro no queda nada que actualizar, respondemos temprano
+    if not update_data:
+        return {"status": "no_changes", "message": "No valid data provided for update"}
+
+    # 4. Lógica especial para la fecha (solo si viene en el update_data filtrado)
     if "appointment_date" in update_data:
         if not data.timezone_region:
             raise HTTPException(status_code=400, detail="timezone_region_required_to_update_date")
         
         try:
             user_tz = pytz.timezone(data.timezone_region)
-            naive_date = data.appointment_date.replace(tzinfo=None)
-            localized_date = user_tz.localize(naive_date)
+            # El objeto ya viene como datetime desde Pydantic
+            dt = update_data["appointment_date"]
+            
+            # Quitar tzinfo si viene de Pydantic para localizarlo manualmente al timezone del usuario
+            if dt.tzinfo is not None:
+                dt = dt.replace(tzinfo=None)
+                
+            localized_date = user_tz.localize(dt)
             update_data["appointment_date"] = localized_date.astimezone(pytz.UTC)
-            # Quitamos timezone_region de los datos a insertar en DB si no existe esa columna
+            
+            # Quitamos la región para que no intente guardarla en la tabla si no existe esa columna
             update_data.pop("timezone_region", None)
         except Exception as e:
-            raise HTTPException(status_code=400, detail="invalid_timezone_or_date")
+            raise HTTPException(status_code=400, detail=f"invalid_timezone_or_date: {str(e)}")
 
-    # 5. Aplicar cambios dinámicamente
+    # 5. Aplicar cambios solo de los campos filtrados
     for key, value in update_data.items():
-        setattr(appointment, key, value)
+        if hasattr(appointment, key): # Verificación extra de seguridad
+            setattr(appointment, key, value)
 
     try:
-        # 6. Registro de Auditoría
+        # 6. Auditoría con datos limpios
+        audit_payload = jsonable_encoder({
+            "appointment_id": appointment_id,
+            "changes": update_data 
+        })
+
         register_action_log(
             db=db,
             establishment_id=uid,
             action="UPDATE_APPOINTMENT",
             method="PATCH",
             path=request.url.path,
-            payload={
-                "appointment_id": appointment_id,
-                "changes": update_data # Guardamos solo lo que cambió
-            },
+            payload=audit_payload,
             request=request
         )
 
@@ -359,10 +380,61 @@ def update_appointment(
         return {
             "status": "success", 
             "id": appointment.id,
-            "new_values": update_data
+            "updated_fields": list(update_data.keys())
         }
 
     except Exception as e:
         db.rollback()
         print(f"🚨 UPDATE APPOINTMENT ERROR: {str(e)}")
         raise HTTPException(status_code=500, detail="internal_update_error")
+
+
+@router.delete("/{appointment_id}", status_code=status.HTTP_200_OK)
+def delete_appointment(
+    appointment_id: int,
+    db: Session = Depends(get_db),
+    token_data: dict = Depends(verify_firebase_token)
+):
+    # 1. Extraer el UID del establecimiento desde el token de Firebase
+    establishment_id = token_data.get('uid')
+
+    # 2. Buscar el registro asegurando que pertenezca al establecimiento
+    appointment = db.query(Appointment).filter(
+        Appointment.id == appointment_id,
+        Appointment.establishment_id == establishment_id
+    ).first()
+
+    # 3. Si no existe o es de otro local, lanzamos 404 por seguridad
+    if not appointment:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="APPOINTMENT_NOT_FOUND"
+        )
+
+    # 4. REGLA DE NEGOCIO: Bloquear si ya se envió el mensaje
+    # Validamos si whatsapp_id tiene contenido (no es None y no es string vacío)
+    if appointment.whatsapp_id and str(appointment.whatsapp_id).strip():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="RECORD_IMMUTABLE_MESSAGE_ALREADY_SENT"
+        )
+
+    # 5. Intentar la eliminación física del row
+    try:
+        db.delete(appointment)
+        db.commit()
+        
+        return {
+            "status": "success",
+            "message": f"Appointment {appointment_id} deleted successfully.",
+            "id_deleted": appointment_id
+        }
+
+    except Exception as e:
+        db.rollback()
+        # Log del error interno para debug
+        print(f"🚨 ERROR SQL DELETE: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="DATABASE_ERROR_ON_DELETE"
+        )

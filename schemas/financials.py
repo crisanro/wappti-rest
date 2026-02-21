@@ -52,9 +52,8 @@ class ActivateReferralRequest(BaseModel):
 # --- 3. RETIROS ---
 
 class PayoutMethodCreate(BaseModel):
-    method_type: str        # ej: "Zelle", "PayPal", "Banco"
-    account_details: Dict[str, str]
-    is_default: bool = False
+    platform: str = Field(..., example="Paypal")
+    account_details: str = Field(..., example="usuario@email.com")
 
 class WithdrawalRequestCreate(BaseModel):
     amount: float = Field(..., gt=0)

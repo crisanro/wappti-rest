@@ -40,8 +40,8 @@ class ReferralCode(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     code = Column(Text, unique=True, nullable=False)
     user_count = Column(BigInteger, default=0)
-    users_list = Column(ARRAY(BigInteger), default=[])
-
+    users_list = Column(ARRAY(String), default=[])
+    
 class ReferralBalance(Base):
     """Balances de comisiones"""
     __tablename__ = "referral_balances"

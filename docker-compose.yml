@@ -11,12 +11,4 @@ services:
       - .env
     environment:
       - DEBUG=False           # Seguridad ante todo
-
     restart: always
-
-    networks:
-      - red_infraestructura
-
-networks:
-  red_infraestructura:
-    external: true

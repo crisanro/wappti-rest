@@ -57,17 +57,35 @@ def create_payment_alert(data: SystemAlertCreate, db: Session = Depends(get_db))
 
 # --- SECTION: REVIEWS (Protected Create, Public Feed) ---
 
-@router.post("/reviews", status_code=status.HTTP_201_CREATED, dependencies=[Depends(verify_firebase_token)])
-def create_review(data: ReviewCreate, db: Session = Depends(get_db)):
-    """
-    Saves a business review.
-    """
-    new_review = EstablishmentReview(**data.model_dump())
-    db.add(new_review)
-    db.commit()
-    
-    return {"status": "review saved"}
+@router.post("/reviews", status_code=status.HTTP_201_CREATED)
+def create_review(
+    data: ReviewCreate, 
+    db: Session = Depends(get_db),
+    token_data: dict = Depends(verify_firebase_token)
+):
+    my_id = token_data.get('uid')
 
+    # Upsert: Creamos o Actualizamos
+    existing_review = db.query(EstablishmentReview).filter(
+        EstablishmentReview.establishment_id == my_id
+    ).first()
+
+    if existing_review:
+        existing_review.rating = data.rating
+        existing_review.comment = data.comment
+        db.commit()
+        return {"status": "updated"}
+    
+    else:
+        new_review = EstablishmentReview(
+            rating=data.rating,
+            comment=data.comment,
+            establishment_id=my_id
+        )
+        db.add(new_review)
+        db.commit()
+        return {"status": "created"}
+    
 
 @router.get("/reviews")
 def get_combined_reviews(

@@ -57,18 +57,18 @@ def create_billing_profile(
         establishment_id = token_data.get('uid')
         id_num = data.tax_id_number.strip()
         
-        # 1. Mapeo de códigos (4: Cédula, 5: RUC, 6: Pasaporte, 8: Exterior)
-        type_mapping = {"Cédula": "4", "RUC": "5", "Pasaporte": "6", "Exterior": "8"}
+        # 1. Mapeo de códigos CORREGIDO (4: RUC, 5: Cédula, 6: Pasaporte, 8: Exterior)
+        # Según estándar SRI Ecuador
+        type_mapping = {"RUC": "04", "Cédula": "05", "Pasaporte": "06", "Exterior": "08"}
         tax_code = type_mapping.get(data.tax_id_type)
         
         if not tax_code:
             raise HTTPException(status_code=400, detail="INVALID_TAX_ID_TYPE")
 
-        # 2. VALIDACIÓN DE DUPLICADOS POR CLIENTE (Lo que pediste)
-        # Buscamos si ESTE cliente ya tiene ESTE número registrado
+        # 2. VALIDACIÓN DE DUPLICADOS POR CLIENTE
         already_exists = db.query(CustomerBillingProfile).filter(
             CustomerBillingProfile.tax_id_number == id_num,
-            CustomerBillingProfile.customer_id == data.customer_id # <--- CAMBIO AQUÍ
+            CustomerBillingProfile.customer_id == data.customer_id
         ).first()
 
         if already_exists:
@@ -87,12 +87,16 @@ def create_billing_profile(
             raise HTTPException(status_code=403, detail="CUSTOMER_NOT_OWNED")
 
         # 4. VALIDACIONES DE ALGORITMO (Ecuador)
-        if tax_code == "4":
+        # Código 05 es Cédula
+        if tax_code == "05":
             if not validate_ecuadorian_id(id_num):
                 raise HTTPException(status_code=400, detail="INVALID_CEDULA_DIGIT_VERIFIER")
-        elif tax_code == "5":
+        
+        # Código 04 es RUC
+        elif tax_code == "04":
             if len(id_num) != 13 or not id_num.endswith("001"):
                 raise HTTPException(status_code=400, detail="INVALID_RUC_FORMAT")
+            # Validación para RUC de personas naturales (tercer dígito menor a 6)
             if int(id_num[2]) < 6 and not validate_ecuadorian_id(id_num[0:10]):
                 raise HTTPException(status_code=400, detail="INVALID_RUC_NATURAL_PERSON")
 
@@ -115,5 +119,7 @@ def create_billing_profile(
         raise he
     except Exception as e:
         db.rollback()
+        # Asegúrate de importar traceback si vas a usarlo
+        import traceback
         print(f"🚨 ERROR: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="INTERNAL_SERVER_ERROR_BILLING")

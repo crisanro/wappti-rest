@@ -1,0 +1,275 @@
+import pytz
+from datetime import datetime, timedelta, timezone
+from typing import List
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+from sqlalchemy import text
+
+from core.database import get_db
+from core.auth import verify_superadmin_key  # Tu función que valida el header X-Superadmin-Key
+from schemas.admin.appointment import AppointmentConfirmation, SingleUpdatePayload, WhatsAppStatusPayload
+
+# 1. Configuración Global del Router
+# Al poner las dependencias aquí, PROTEGES TODAS las funciones de este archivo automáticamente.
+router = APIRouter(
+    prefix="/admin",
+    tags=["Admin Appointments"],
+    dependencies=[Depends(verify_superadmin_key)] 
+)
+
+@router.get("/appointments/pending-batch", status_code=status.HTTP_200_OK)
+async def get_pending_appointments_batch(
+    hours_min: int = 8,
+    hours_max: int = 21,
+    db: Session = Depends(get_db)
+):
+    now_utc = datetime.now(timezone.utc)
+    start_range = now_utc + timedelta(hours=hours_min)
+    end_range = now_utc + timedelta(hours=hours_max)
+
+    # Nota: 'e.language' es la columna real en tu tabla 'establishments'
+    sql_query = text("""
+        SELECT 
+            a.id AS appo_id, a.appointment_date,
+            c.first_name, c.country_code, c.phone, c.language AS customer_lang,
+            p.timezone AS profile_tz, p.message_language AS location_info,
+            e.id AS est_id, e.name AS est_name, e.available_credits,
+            e.header_signature, e.virtual_assistant_signature, e.message_signature,
+            e.language AS est_lang  -- Aquí mapeamos la columna real 'language' a 'est_lang'
+        FROM appointments a
+        INNER JOIN customers c ON a.customer_id = c.id
+        INNER JOIN profiles p ON a.profile_id = p.id
+        INNER JOIN establishments e ON a.establishment_id = e.id
+        WHERE a.response_text = 'pending' 
+          AND e.available_credits > 0
+          AND e.is_suspended = FALSE
+          AND a.appointment_date BETWEEN :start AND :end
+        ORDER BY e.id, a.appointment_date ASC
+    """)
+
+    try:
+        results = db.execute(sql_query, {"start": start_range, "end": end_range}).mappings().all()
+        
+        est_groups = {}
+        for row in results:
+            est_id = row["est_id"]
+            if est_id not in est_groups:
+                est_groups[est_id] = {"info": row, "items": []}
+            est_groups[est_id]["items"].append(row)
+
+        appointments_to_send = []
+        business_alerts = []
+
+        for est_id, group in est_groups.items():
+            credits = group["info"]["available_credits"]
+            total_requested = len(group["items"])
+            
+            # Lógica de estados
+            if credits < total_requested:
+                status_code = "INSUFFICIENT_CREDITS"
+                allowed = credits
+            elif credits == total_requested:
+                status_code = "EXACT_CREDITS_REACHING_ZERO"
+                allowed = total_requested
+            else:
+                remaining = credits - total_requested
+                status_code = "LOW_CREDITS_WARNING" if remaining <= 10 else "HEALTHY"
+                allowed = total_requested
+
+            # Alertas para el dueño del local
+            if status_code != "HEALTHY":
+                business_alerts.append({
+                    "establishment_id": est_id,
+                    "establishment_name": group["info"]["est_name"],
+                    "establishment_lang": group["info"]["est_lang"] or "es", # Idioma del local
+                    "alert_code": status_code,
+                    "credits_left": max(0, credits - allowed)
+                })
+
+            for i in range(allowed):
+                row = group["items"][i]
+                tz = pytz.timezone(row["profile_tz"] or "America/Guayaquil")
+                local_dt = row["appointment_date"].astimezone(tz)
+                now_local = datetime.now(tz)
+                
+                delta_days = (local_dt.date() - now_local.date()).days
+                day_ref = "today" if delta_days == 0 else "tomorrow" if delta_days == 1 else local_dt.strftime("%d/%m")
+
+                appointments_to_send.append({
+                    "appointment_id": row["appo_id"],
+                    "customer_name": row["first_name"],
+                    "customer_whatsapp": f"{row['country_code']}{row['phone']}",
+                    "customer_lang": row["customer_lang"] or "es",
+                    "time_details": {
+                        "local_date": local_dt.strftime("%Y-%m-%d"),
+                        "local_time": local_dt.strftime("%H:%M"),
+                        "day_ref": day_ref
+                    },
+                    "template_data": {
+                        "header_text": (row["header_signature"] or row["est_name"])[:25],
+                        "assistant_name": row["virtual_assistant_signature"] or "de Wappti",
+                        "location_info": row["location_info"] or row["message_signature"] or row["est_name"]
+                    },
+                    "establishment_id": est_id,
+                    "establishment_lang": row["est_lang"] or "es" # Enviamos el idioma del local también aquí
+                })
+
+        return {
+            "status": "success",
+            "appointments": appointments_to_send,
+            "business_alerts": business_alerts
+        }
+
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/update-single-send", status_code=status.HTTP_200_OK)
+async def update_single_send(
+    payload: SingleUpdatePayload, # Recibimos el JSON aquí
+    db: Session = Depends(get_db),
+    _ : str = Depends(verify_superadmin_key)
+):
+    """
+    Actualiza cita y créditos mediante un cuerpo JSON.
+    """
+    try:
+        # Usamos payload.campo para acceder a los datos
+        query = text("""
+            WITH updated_appo AS (
+                UPDATE appointments 
+                SET response_text = 'sent', whatsapp_id = :w_id 
+                WHERE id = :a_id AND response_text = 'pending'
+                RETURNING id
+            )
+            UPDATE establishments 
+            SET available_credits = available_credits - 1
+            WHERE id = :e_id AND EXISTS (SELECT 1 FROM updated_appo);
+        """)
+        
+        result = db.execute(query, {
+            "a_id": payload.appointment_id, 
+            "w_id": payload.whatsapp_id, 
+            "e_id": payload.establishment_id
+        })
+        
+        db.commit()
+
+        if result.rowcount == 0:
+            return {
+                "status": "already_processed", 
+                "message": "La cita no existe, ya fue enviada o el local es incorrecto."
+            }
+
+        return {"status": "success"}
+
+    except Exception as e:
+        db.rollback()
+        print(f"❌ Error actualizando cita {payload.appointment_id}: {e}")
+        raise HTTPException(status_code=500, detail="SINGLE_UPDATE_FAILED")
+
+@router.post("/process-whatsapp-status")
+async def process_whatsapp_status(payload: WhatsAppStatusPayload, db: Session = Depends(get_db)):
+    try:
+        # 1. Obtener información de la cita, cliente y local
+        query = text("""
+            SELECT 
+                a.id as appo_id, a.establishment_id, 
+                c.first_name as customer_name, e.language as est_lang
+            FROM appointments a
+            JOIN customers c ON a.customer_id = c.id
+            JOIN establishments e ON a.establishment_id = e.id
+            WHERE a.whatsapp_id = :w_id OR a.whatsapp_id_2 = :w_id
+        """)
+        row = db.execute(query, {"w_id": payload.whatsapp_id}).mappings().first()
+
+        if not row:
+            # Solo aquí devolvemos NOT_FOUND porque el ID no existe en nuestra DB
+            return {"case": "NOT_FOUND", "sub_case": "UNKNOWN_ID", "trigger_n8n": False}
+
+        # Actualización de status en Postgres (SIEMPRE SE EJECUTA)
+        db.execute(
+            text("UPDATE appointments SET whatsapp_status = :st WHERE id = :id"),
+            {"st": payload.status, "id": row["appo_id"]}
+        )
+
+        main_case = "STATUS_UPDATE"
+
+        # --- SITUACIÓN 1: ÉXITO (sent, delivered, read) ---
+        if payload.status in ["delivered", "read", "sent"]:
+            db.commit()
+            return {
+                "case": main_case,
+                "sub_case": "STATUS_UPDATED",
+                "trigger_n8n": True,
+                "data": {
+                    "status": payload.status,
+                    "establishment_lang": row["est_lang"] or "es",
+                    "customer_name": row["customer_name"],
+                    "appointment_id": row["appo_id"]
+                }
+            }
+
+        # --- SITUACIÓN 2 y 3: FALLO (failed) ---
+        if payload.status == "failed":
+            full_error = f"({payload.error_code}) {payload.error_title}"
+            
+            # Devolver crédito
+            db.execute(text("UPDATE establishments SET available_credits = available_credits + 1 WHERE id = :e_id"),
+                       {"e_id": row["establishment_id"]})
+            
+            # Registro de Error y Auditoría
+            db.execute(text("INSERT INTO whatsapp_errors (appointment_id, error_message) VALUES (:a_id, :msg)"),
+                       {"a_id": row["appo_id"], "msg": full_error})
+            
+            db.execute(text("""
+                INSERT INTO usage_audit_logs (establishment_id, condition, value, observations)
+                VALUES (:e_id, 'top-up', 1, :obs)
+            """), {"e_id": row["establishment_id"], "obs": f"Refund appo {row['appo_id']} - Error: {full_error}"})
+
+            db.commit()
+
+            # Sub-caso: Fallido Establecimiento (Número Inválido)
+            if payload.error_code == "131026":
+                return {
+                    "case": main_case,
+                    "sub_case": "FAILED_ESTABLISHMENT",
+                    "trigger_n8n": True,
+                    "data": {
+                        "establishment_id": row["establishment_id"],
+                        "establishment_lang": row["est_lang"] or "es",
+                        "customer_name": row["customer_name"],
+                        "appointment_id": row["appo_id"],
+                        "error_code": payload.error_code
+                    }
+                }
+            
+            # Sub-caso: Fallido Admin (Cualquier otro error técnico)
+            else:
+                return {
+                    "case": main_case,
+                    "sub_case": "FAILED_ADMIN",
+                    "trigger_n8n": True,
+                    "data": {
+                        "error_code": payload.error_code,
+                        "error_title": payload.error_title,
+                        "establishment_lang": row["est_lang"] or "es",
+                        "customer_name": row["customer_name"],
+                        "appointment_id": row["appo_id"]
+                    }
+                }
+
+        # Si llegara un estado rarísimo que no sea ninguno de los anteriores
+        db.commit()
+        return {
+            "case": main_case,
+            "sub_case": "OTHER_STATUS",
+            "trigger_n8n": True,
+            "data": {"status": payload.status}
+        }
+
+    except Exception as e:
+        db.rollback()
+        return {"case": "SYSTEM_ERROR", "sub_case": "EXCEPTION", "detail": str(e), "trigger_n8n": False}

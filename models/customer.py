@@ -24,6 +24,7 @@ class Customer(Base):
     is_active = Column(Boolean, default=True)
     notes = Column(Text)
     tag_ids = Column(ARRAY(Integer), default=[])
+    language = Column(Text)
 
     # Relaciones
     establishment = relationship("Establishment", back_populates="customers")

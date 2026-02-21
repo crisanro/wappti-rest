@@ -1,9 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, text
 from datetime import datetime, timedelta, timezone
 import traceback
-
+import json
 from core.database import get_db
 from core.auth import verify_firebase_token
 from core.utils import register_action_log
@@ -17,7 +17,7 @@ from schemas.communications import (
     CampaignCreate, # <--- Debe llamarse igual que en el archivo de schemas
     WhatsAppUpdateResponse,
     NotificationResponse,
-    PrepareCampaignSchema
+    PrepareCampaignSchema, UpdateCampaignResponse
 )
 
 router = APIRouter(dependencies=[Depends(verify_firebase_token)])
@@ -110,6 +110,119 @@ def create_marketing_campaign(
         )
     
 
+@router.patch("/{campaign_id}")
+def update_campaign_responses(
+    campaign_id: int, 
+    payload: UpdateCampaignResponse,
+    request: Request,
+    db: Session = Depends(get_db),
+    token_data: dict = Depends(verify_firebase_token)
+):
+    """
+    Updates the 'responses' JSONB column for a specific campaign.
+    Ensures the campaign belongs to the authenticated establishment.
+    """
+    establishment_id = token_data.get('uid')
+
+    try:
+        # 1. Update with Campaign ID and Establishment ID for security
+        query = text("""
+            UPDATE whatsapp_campaigns 
+            SET responses = :new_json
+            WHERE id = :c_id AND establishment_id = :e_id
+            RETURNING id
+        """)
+
+        result = db.execute(query, {
+            "new_json": json.dumps(payload.responses),
+            "c_id": campaign_id,
+            "e_id": establishment_id
+        })
+        
+        # Check if any row was actually updated
+        if not result.fetchone():
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, 
+                detail="Access denied or campaign not found."
+            )
+
+        # 2. Audit log
+        register_action_log(
+            db=db,
+            establishment_id=establishment_id,
+            action="CAMPAIGN_RESPONSES_UPDATED",
+            method="PATCH",
+            path=request.url.path,
+            payload={"campaign_id": campaign_id},
+            request=request
+        )
+
+        db.commit()
+        return {
+            "status": "success", 
+            "message": f"Campaign {campaign_id} responses updated successfully."
+        }
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        db.rollback()
+        # Log error for internal tracking
+        print(f"🚨 CRITICAL ERROR: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+            detail="Internal server error during campaign update."
+        )
+
+
+@router.get("/{campaign_id}/dispatches")
+def get_campaign_dispatches(
+    campaign_id: int,
+    db: Session = Depends(get_db),
+    token_data: dict = Depends(verify_firebase_token)
+):
+    """
+    Retrieves campaign dispatches. 
+    Validates that the authenticated establishment owns the campaign.
+    Columns: phone_number, status, customer_id
+    """
+    establishment_id = token_data.get('uid')
+
+    # 1. Query with JOIN to validate ownership across tables
+    # We ensure dispatches are only shown if the campaign's establishment_id matches the JWT
+    query = text("""
+        SELECT 
+            d.phone_number, 
+            d.status, 
+            d.customer_id
+        FROM whatsapp_dispatches d
+        JOIN whatsapp_campaigns c ON d.campaign_id = c.id
+        WHERE d.campaign_id = :c_id 
+          AND c.establishment_id = :e_id
+    """)
+
+    try:
+        results = db.execute(query, {
+            "c_id": campaign_id,
+            "e_id": establishment_id
+        }).mappings().all()
+
+        # 2. Return empty list if no records found or access is restricted
+        # (The JOIN handles the security implicitly)
+        if not results:
+            return []
+
+        return results
+
+    except Exception as e:
+        # Internal logging for debugging
+        print(f"🚨 DISPATCH FETCH ERROR: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+            detail="Internal server error while retrieving dispatches."
+        )
+
+
 @router.get("/{campaign_id}")
 def get_campaign_detail(
     campaign_id: int,
@@ -179,3 +292,5 @@ def prepare_mass_send(
         "total_prepared": len(new_dispatches),
         "message": f"Prepared {len(new_dispatches)} messages for campaign {data.campaign_id}"
     }
+
+

@@ -71,7 +71,7 @@ class AppNotification(Base):
     title = Column(Text)
     description = Column(Text)
     condition = Column(Text)      # ej: 'credit_low'
-    redirection_url = Column(Text) # Nombre según SQL
+    redirection = Column(Text) # Nombre según SQL
     is_read = Column(Boolean, default=False)
 
 class AppAd(Base):

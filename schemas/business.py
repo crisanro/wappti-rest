@@ -37,6 +37,7 @@ class EstablishmentUpdate(BaseModel):
 class SetupEstablishmentRequest(BaseModel):
     name: str
     timezone: str # Aquí recibimos "America/Guayaquil"
+    language: str
 
 # --- 2. SEGURIDAD (Security PIN) ---
 

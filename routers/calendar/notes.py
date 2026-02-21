@@ -35,8 +35,8 @@ router = APIRouter(dependencies=[Depends(verify_firebase_token)])
 # --- BUSCAR POR RANGO DE FECHAS ---
 @router.get("/", response_model=list[CalendarNoteResponse])
 def get_calendar_notes(
-    target_date: date = Query(..., example="2026-02-11"),
-    profile_id: int = Query(..., example=350), # Filtro obligatorio por perfil
+    target_date: date = Query(..., examples="2026-02-11"),
+    profile_id: int = Query(..., examples=350), # Filtro obligatorio por perfil
     db: Session = Depends(get_db),
     token_data: dict = Depends(verify_firebase_token)
 ):

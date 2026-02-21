@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 from datetime import datetime, date
 
@@ -21,6 +21,14 @@ class AppointmentUpdate(BaseModel):
     profile_id: Optional[int] = None
     reason: Optional[str] = None
     response_text: Optional[str] = None
+
+    # Este validador detecta cualquier campo que venga como "" y lo convierte en None
+    @field_validator('*', mode='before')
+    @classmethod
+    def transform_empty_string_to_none(cls, v):
+        if v == "":
+            return None
+        return v
     
 
 class AppointmentResponse(AppointmentBase):

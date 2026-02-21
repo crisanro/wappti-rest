@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, text
 from datetime import datetime, timedelta, timezone
@@ -17,11 +17,10 @@ from schemas.communications import (
     CampaignCreate, # <--- Debe llamarse igual que en el archivo de schemas
     WhatsAppUpdateResponse,
     NotificationResponse,
-    PrepareCampaignSchema
+    PrepareCampaignSchema, FollowupRequest
 )
 
 router = APIRouter(dependencies=[Depends(verify_firebase_token)])
-
 
 @router.get("/")
 def get_notifications(
@@ -30,49 +29,57 @@ def get_notifications(
     db: Session = Depends(get_db), 
     token_data: dict = Depends(verify_firebase_token)
 ):
+    """
+    Retrieves internal app notifications for the authenticated establishment.
+    Converts 'created_at' to the local time based on the provided timezone.
+    """
+    establishment_id = token_data.get('uid')
+
     try:
-        establishment_id = token_data.get('uid')
-
-        # 1. Zona Horaria
+        # 1. Setup Local Timezone
         try:
-            user_tz = pytz.timezone(tz_name)
+            local_tz = pytz.timezone(tz_name)
         except Exception:
-            user_tz = pytz.UTC
+            # Fallback to UTC if timezone is invalid
+            local_tz = pytz.UTC
 
-        # 2. Consulta
+        # 2. Database Query
         notifications_db = db.query(AppNotification).filter(
             AppNotification.establishment_id == establishment_id
         ).order_by(AppNotification.created_at.desc()).limit(limit).all()
 
-        # 3. Transformación Dinámica Segura
+        # 3. Explicit Transformation
         result = []
         for n in notifications_db:
-            try:
-                # Convertimos el objeto de la DB a un diccionario real
-                row = {}
-                for column in n.__table__.columns:
-                    value = getattr(n, column.name)
-                    
-                    # Si el valor es una fecha, la procesamos con la zona horaria
-                    if isinstance(value, datetime):
-                        if value.tzinfo is None:
-                            value = value.replace(tzinfo=pytz.UTC)
-                        row[column.name] = value.astimezone(user_tz).isoformat()
-                    else:
-                        row[column.name] = value
+            # Safe Date Handling
+            local_created_at = None
+            if n.created_at:
+                # If DB date is naive (no timezone), we assume it's UTC
+                dt = n.created_at
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=pytz.UTC)
                 
-                result.append(row)
-            except Exception as inner_e:
-                print(f"⚠️ Error procesando notificación: {inner_e}")
-                continue
+                # CONVERSION TO LOCAL TIME (America/Guayaquil)
+                local_created_at = dt.astimezone(local_tz).isoformat()
+
+            result.append({
+                "id": n.id,
+                "title": n.title or "",
+                "description": n.description or "",
+                "condition": n.condition or "",
+                "redirection": n.redirection or "",
+                "is_read": n.is_read,
+                "created_at": local_created_at  # Now in local time
+            })
 
         return result
 
     except Exception as e:
-        # Esto imprimirá en tu consola el error real (ej: si falta una tabla o columna fkey)
-        print("--- DEBUG NOTIFICATIONS ERROR ---")
-        print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+        print(f"🚨 NOTIFICATIONS LOCAL TIME ERROR: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+            detail="Internal server error while processing local time for notifications."
+        )
 
 
 @router.patch("/read-all")
@@ -133,3 +140,40 @@ def mark_one_as_read(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+
+
+@router.post("/register-followup", status_code=status.HTTP_201_CREATED)
+async def register_followup(
+    data: FollowupRequest,
+    db: Session = Depends(get_db),
+    token_data: dict = Depends(verify_firebase_token)
+):
+    # Obtenemos el ID del establecimiento desde el JWT
+    user_id = str(token_data.get('uid'))
+    
+    try:
+        # Creamos el registro en la tabla pending_followups
+        new_followup = PendingFollowup(
+            establishment_id=user_id,
+            followup_type=data.followup_type.value # Guardamos el string (ej: "abandoned_checkout")
+        )
+        
+        db.add(new_followup)
+        db.commit()
+        
+        return {
+            "status": "success",
+            "message": "Followup registered successfully",
+            "type": data.followup_type
+        }
+        
+    except Exception as e:
+        db.rollback()
+        # Aquí también podrías usar tu webhook de seguridad si consideras que fallar aquí es crítico
+        print(f"🚨 Error registering followup: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+            detail="COULD_NOT_REGISTER_FOLLOWUP"
+        )

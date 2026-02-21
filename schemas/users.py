@@ -36,23 +36,24 @@ class CustomerCore(BaseModel):
 
 # 2. Schema para CREACIÓN (Añadimos lo que falta para el POST)
 class CustomerCreate(CustomerCore):
-    email: Optional[EmailStr] = None
+    email: Optional[str] = None
     identification_id: Optional[str] = None
     profile_id: int
     country_name: str
+    language: str = "es"  # Defaulting to "es" if not provided
 
 class CustomerUpdate(BaseModel):
-    # Usamos Optional en todo para que puedas actualizar solo un campo 
-    # sin tener que enviar todos los demás datos del cliente.
+    # Campos que antes eran obligatorios, ahora son opcionales con valor None
     first_name: Optional[str] = None
     last_name: Optional[str] = None
     phone: Optional[int] = None
-    email: Optional[EmailStr] = None
+    email: Optional[str] = None
     identification_id: Optional[str] = None
     notes: Optional[str] = None
-    country_code: Optional[str] = None # Ejemplo: "EC"
-    country_name: Optional[str] = None # Ejemplo: "Ecuador"
-    tag_ids: Optional[List[int]] = None # Se recibe pero se ignora en este endpoint
+    country_code: Optional[int] = None # Cambiado a Optional
+    country_name: Optional[str] = None # Cambiado a Optional
+    language: Optional[str] = None     # Cambiado a Optional
+    tag_ids: Optional[List[int]] = None
 
     class Config:
         from_attributes = True

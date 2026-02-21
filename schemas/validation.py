@@ -7,15 +7,15 @@ class CheckPhoneSchema(BaseModel):
 
 # Para solicitar el envío de un PIN de validación por WhatsApp
 class PinRequestSchema(BaseModel):
-    phone: str # Antes numero
+    phone: int # Antes numero
     name: str # Antes nombre
 
 # Para verificar el PIN ingresado por el usuario y completar el registro
 class VerifyPinSchema(BaseModel):
     pin: int
-    referred_by: Optional[str] = None # Antes referido (UID del que invitó)
-    country: str # Antes pais
-    name: str # Antes nombre
+    phone: int  # <--- RECIBIDO: El número de teléfono (BigInt)
+    country: str
+    referred_by: Optional[str] = None # Código de referido
 
 class LinkReferralRequest(BaseModel):
     code_text: str
