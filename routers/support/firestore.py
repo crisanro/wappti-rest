@@ -258,9 +258,10 @@ def link_referral_code(
 ):
     try:
         establishment_id = token_data.get('uid')
+        # Normalizamos el código (quitamos espacios y pasamos a minúsculas)
         clean_code = "".join(data.code_text.split()).lower()
 
-        # 1. Buscamos el establecimiento
+        # 1. Validación de existencia del negocio en SQL
         establishment = db.query(Establishment).filter(Establishment.id == establishment_id).first()
         
         if not establishment:
@@ -269,13 +270,15 @@ def link_referral_code(
         if establishment.referred_by:
             raise HTTPException(status_code=400, detail="already_referred")
 
-        # 2. Buscamos el código
+        # 2. Búsqueda del código de referido
         referral_record = db.query(ReferralCode).filter(ReferralCode.code == clean_code).first()
         
         if not referral_record:
             raise HTTPException(status_code=404, detail="invalid_code")
 
-        # 3. Vinculación y actualización del contador
+        # --- LÓGICA DE ACTUALIZACIÓN ---
+
+        # 3. Vincular en SQL y actualizar contador
         establishment.referred_by = referral_record.id
         
         if referral_record.user_count is None:
@@ -283,29 +286,43 @@ def link_referral_code(
         else:
             referral_record.user_count += 1
 
-        # 4. Registro de Log
+        # 4. 🔥 ACTUALIZACIÓN EN FIRESTORE 🔥
+        # Actualizamos la columna 'Referido' con el ID del dueño del código
+        try:
+            if db_firestore:
+                user_ref = db_firestore.collection("users").document(establishment_id)
+                user_ref.update({
+                    "Referido": referral_record.id,
+                    "referral_code_used": clean_code, # Opcional: para saber qué código usó
+                    "updated_at": datetime.now(timezone.utc)
+                })
+        except Exception as fs_error:
+            # Logueamos el error pero no detenemos el proceso SQL 
+            # para no arruinar la experiencia del usuario si Firestore tiene lag
+            print(f"⚠️ Firestore sync error (Referral): {fs_error}")
+
+        # 5. Registro de Log de Auditoría
         register_action_log(
             db=db, 
             establishment_id=establishment_id, 
             action="REFERRAL_LINKED", 
             method="POST", 
             path=request.url.path, 
-            payload={"code": clean_code, "owner_id": referral_record.id}, 
+            payload={"code": clean_code, "referral_id": referral_record.id}, 
             request=request
         )
         
         db.commit()
 
-        # --- RESPUESTA CON EL ID DEL DUEÑO ---
         return {
             "status": "success",
             "linked_code": clean_code,
-            "referral_id": referral_record.id  # Este es el ID del dueño del código
+            "referral_id": referral_record.id 
         }
         
     except HTTPException as he:
         raise he
     except Exception as e:
         db.rollback()
-        print(f"🚨 ERROR: {str(e)}")
+        print(f"🚨 REFERRAL ERROR: {str(e)}")
         raise HTTPException(status_code=500, detail="internal_server_error")
