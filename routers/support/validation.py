@@ -4,28 +4,22 @@ import random
 import traceback
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, cast, Date
-from firebase_admin import firestore
 from datetime import datetime, timezone
 
 from core.database import get_db
 from core.auth import verify_firebase_token
 from core.utils import register_action_log
 
-# Import English models & Schemas
+# Import de modelos y esquemas
 from models import *
-from schemas.validation import CheckPhoneSchema, PinRequestSchema, VerifyPinSchema, LinkReferralRequest
+from schemas.validation import PinRequestSchema
 
-from .firestore import update_user_reminders
-
-# --- CONFIGURACIÓN DE RUTAS ESPECÍFICAS ---
+# --- CONFIGURACIÓN ---
+# Asegúrate de que esta variable esté en tu .env o entorno de Docker
 WEBHOOK_URL_AUTH_PIN = os.getenv("WEBHOOK_WHATSAPP_AUTH_PIN")
 
+router = APIRouter()
 
-router = APIRouter() # Quitamos la dependencia global si algunos endpoints son públicos, o la mantenemos si todos requieren token.
-
-
-# --- 2. SEND VERIFICATION PIN ---
 @router.post("/request-verification-pin")
 async def request_verification_pin(
     data: PinRequestSchema, 
@@ -36,18 +30,17 @@ async def request_verification_pin(
     user_id = token_data['uid']
     
     try:
-        # 1. Obtener info del establecimiento (Nombre e Idioma)
+        # 1. Obtener info del establecimiento
         establishment = db.query(Establishment).filter(Establishment.id == user_id).first()
         if not establishment:
             raise HTTPException(status_code=404, detail="ESTABLISHMENT_NOT_FOUND")
 
-        # 2. Buscar si ya existe un PIN para este usuario
+        # 2. Gestión de registros de PIN
         record = db.query(WhatsAppAuthPin).filter(WhatsAppAuthPin.id == user_id).first()
 
-        # 3. Validaciones de Seguridad
         if record:
-            # Bloqueo si intenta cambiar el número en este paso (debe usar el endpoint de reset)
             if str(record.associated_phone) != str(data.phone):
+                # Log de seguridad antes de lanzar la excepción
                 register_action_log(
                     db, user_id, "SECURITY_PIN_PHONE_MISMATCH", "POST", 
                     request.url.path, {"db": record.associated_phone, "req": data.phone}, 
@@ -66,7 +59,6 @@ async def request_verification_pin(
             record.send_attempts += 1
             action_type = f"PIN_RESENT_AT_{record.send_attempts}"
         else:
-            # Generación de primer PIN
             current_pin = random.randint(1000, 9999)
             record = WhatsAppAuthPin(
                 id=user_id,
@@ -78,28 +70,34 @@ async def request_verification_pin(
             db.add(record)
             action_type = "PIN_FIRST_REQUEST"
 
-        # 4. Envío al Webhook Específico (Solo para PINs)
-        # Enviamos toda la metadata necesaria para la plantilla de WhatsApp
+        # --- 3. ENVÍO AL WEBHOOK (WhatsApp Service) ---
+        
         webhook_payload = {
             "source": "auth_system",
-            "establishment_id": user_id,
-            "establishment_name": establishment.name or "S/N",
+            "establishment_id": str(user_id),
+            "establishment_name": str(establishment.name or "S/N"),
             "phone_to": str(data.phone),
             "pin": str(current_pin),
-            "language": establishment.language or "es", # Obtenido de la DB
+            "language": str(establishment.language or "es"),
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
 
-        if WEBHOOK_URL_AUTH_PIN:
+        # Verificación técnica en consola
+        if not WEBHOOK_URL_AUTH_PIN:
+            print("⚠️ ADVERTENCIA: WEBHOOK_URL_AUTH_PIN no está definida. El PIN no se enviará.")
+        else:
             try:
-                async with httpx.AsyncClient() as client:
-                    # Lo enviamos y no esperamos una respuesta pesada, solo el envío
-                    await client.post(WEBHOOK_URL_AUTH_PIN, json=webhook_payload, timeout=5.0)
+                # Usamos un bloque asíncrono con un timeout más robusto
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    response = await client.post(WEBHOOK_URL_AUTH_PIN, json=webhook_payload)
+                    
+                    # Log para debug en consola si falla el destino
+                    if response.status_code not in [200, 201]:
+                        print(f"❌ Webhook Error {response.status_code}: {response.text}")
             except Exception as web_err:
-                print(f"⚠️ Error enviando al Webhook de PIN: {str(web_err)}")
-                # El proceso sigue aunque el webhook falle (para que el log quede guardado)
-        
-        # 5. Registro y Finalización
+                print(f"🚨 Fallo de conexión con Webhook: {str(web_err)}")
+
+        # 4. Finalización de la transacción SQL
         register_action_log(
             db, user_id, action_type, "POST", request.url.path, 
             {"phone": data.phone, "attempt": record.send_attempts}, request
