@@ -16,5 +16,6 @@ class SingleUpdatePayload(BaseModel):
 class WhatsAppStatusPayload(BaseModel):
     whatsapp_id: str
     status: Optional[str] = None
+    response_text: Optional[str] = None
     error_code: Optional[str] = None
     error_title: Optional[str] = None
