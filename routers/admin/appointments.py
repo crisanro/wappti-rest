@@ -173,10 +173,10 @@ async def update_single_send(
 @router.post("/process-whatsapp-status")
 async def process_whatsapp_status(payload: WhatsAppStatusPayload, db: Session = Depends(get_db)):
     try:
-        # 1. Obtener información de la cita, cliente y local
+        # 1. Buscar la cita por cualquiera de los dos IDs de WhatsApp
         query = text("""
             SELECT 
-                a.id as appo_id, a.establishment_id, 
+                a.id as appo_id, a.establishment_id, a.whatsapp_id, a.whatsapp_id_2,
                 c.first_name as customer_name, e.language as est_lang
             FROM appointments a
             JOIN customers c ON a.customer_id = c.id
@@ -186,90 +186,94 @@ async def process_whatsapp_status(payload: WhatsAppStatusPayload, db: Session = 
         row = db.execute(query, {"w_id": payload.whatsapp_id}).mappings().first()
 
         if not row:
-            # Solo aquí devolvemos NOT_FOUND porque el ID no existe en nuestra DB
             return {"case": "NOT_FOUND", "sub_case": "UNKNOWN_ID", "trigger_n8n": False}
 
-        # Actualización de status en Postgres (SIEMPRE SE EJECUTA)
-        db.execute(
-            text("UPDATE appointments SET whatsapp_status = :st WHERE id = :id"),
-            {"st": payload.status, "id": row["appo_id"]}
-        )
+        # --- CASO 1: Actualización de Estado (Viene 'status') ---
+        if payload.status:
+            # Actualización básica de estado en la tabla
+            db.execute(
+                text("UPDATE appointments SET whatsapp_status = :st WHERE id = :id"),
+                {"st": payload.status, "id": row["appo_id"]}
+            )
 
-        main_case = "STATUS_UPDATE"
-
-        # --- SITUACIÓN 1: ÉXITO (sent, delivered, read) ---
-        if payload.status in ["delivered", "read", "sent"]:
-            db.commit()
-            return {
-                "case": main_case,
-                "sub_case": "STATUS_UPDATED",
-                "trigger_n8n": True,
-                "data": {
-                    "status": payload.status,
-                    "establishment_lang": row["est_lang"] or "es",
-                    "customer_name": row["customer_name"],
-                    "appointment_id": row["appo_id"]
-                }
-            }
-
-        # --- SITUACIÓN 2 y 3: FALLO (failed) ---
-        if payload.status == "failed":
-            full_error = f"({payload.error_code}) {payload.error_title}"
-            
-            # Devolver crédito
-            db.execute(text("UPDATE establishments SET available_credits = available_credits + 1 WHERE id = :e_id"),
-                       {"e_id": row["establishment_id"]})
-            
-            # Registro de Error y Auditoría
-            db.execute(text("INSERT INTO whatsapp_errors (appointment_id, error_message) VALUES (:a_id, :msg)"),
-                       {"a_id": row["appo_id"], "msg": full_error})
-            
-            db.execute(text("""
-                INSERT INTO usage_audit_logs (establishment_id, condition, value, observations)
-                VALUES (:e_id, 'top-up', 1, :obs)
-            """), {"e_id": row["establishment_id"], "obs": f"Refund appo {row['appo_id']} - Error: {full_error}"})
-
-            db.commit()
-
-            # Sub-caso: Fallido Establecimiento (Número Inválido)
-            if payload.error_code == "131026":
+            # Sub-caso A: Éxito
+            if payload.status in ["delivered", "read", "sent"]:
+                db.commit()
                 return {
-                    "case": main_case,
-                    "sub_case": "FAILED_ESTABLISHMENT",
+                    "case": "STATUS_UPDATE",
+                    "sub_case": "SUCCESS",
                     "trigger_n8n": True,
-                    "data": {
-                        "establishment_id": row["establishment_id"],
-                        "establishment_lang": row["est_lang"] or "es",
-                        "customer_name": row["customer_name"],
-                        "appointment_id": row["appo_id"],
-                        "error_code": payload.error_code
-                    }
+                    "data": {"status": payload.status, "appointment_id": row["appo_id"]}
                 }
-            
-            # Sub-caso: Fallido Admin (Cualquier otro error técnico)
-            else:
+
+            # Sub-caso B: Fallo (Error)
+            if payload.status == "failed":
+                full_error = f"({payload.error_code}) {payload.error_title}"
+                
+                # Devolución de crédito y log de error
+                db.execute(text("UPDATE establishments SET available_credits = available_credits + 1 WHERE id = :e_id"),
+                           {"e_id": row["establishment_id"]})
+                db.execute(text("INSERT INTO whatsapp_errors (appointment_id, error_message) VALUES (:a_id, :msg)"),
+                           {"a_id": row["appo_id"], "msg": full_error})
+
+                db.commit()
+
+                # Discriminación de tipo de error
+                sub_case = "FAILED_USER_NUMBER" if payload.error_code == "131026" else "FAILED_SYSTEM_ADMIN"
                 return {
-                    "case": main_case,
-                    "sub_case": "FAILED_ADMIN",
+                    "case": "STATUS_UPDATE",
+                    "sub_case": sub_case,
                     "trigger_n8n": True,
                     "data": {
                         "error_code": payload.error_code,
                         "error_title": payload.error_title,
-                        "establishment_lang": row["est_lang"] or "es",
-                        "customer_name": row["customer_name"],
                         "appointment_id": row["appo_id"]
                     }
                 }
 
-        # Si llegara un estado rarísimo que no sea ninguno de los anteriores
+        # --- CASO 2 & 3: Respuesta del Cliente (Viene 'response_text') ---
+        if payload.response_text:
+            
+            # CASO 2: Coincide con whatsapp_id (Confirmación / Reagendamiento)
+            if payload.whatsapp_id == row["whatsapp_id"]:
+                db.execute(
+                    text("UPDATE appointments SET response_text = :txt WHERE id = :id"),
+                    {"txt": payload.response_text, "id": row["appo_id"]}
+                )
+                db.commit()
+                
+                sub_case = "CUSTOMER_CONFIRMED" if payload.response_text.lower() == "confirmed" else "CUSTOMER_RESCHEDULED"
+                return {
+                    "case": "APPOINTMENT_RESPONSE",
+                    "sub_case": sub_case,
+                    "trigger_n8n": True,
+                    "data": {"text": payload.response_text, "appointment_id": row["appo_id"]}
+                }
+
+            # CASO 3: Coincide con whatsapp_id_2 (Calidad del Servicio)
+            elif payload.whatsapp_id == row["whatsapp_id_2"]:
+                db.execute(
+                    text("UPDATE appointments SET service_quality = :txt WHERE id = :id"),
+                    {"txt": payload.response_text, "id": row["appo_id"]}
+                )
+                db.commit()
+
+                # Determinamos sub-caso de calidad
+                text_low = payload.response_text.lower()
+                if "noshow" in text_low: sub_case = "QUALITY_NOSHOW"
+                elif "good_service" in text_low: sub_case = "QUALITY_GOOD"
+                else: sub_case = "QUALITY_COMPLAINT" # Para 'file_complaint' o cualquier otro
+
+                return {
+                    "case": "SERVICE_QUALITY_FEEDBACK",
+                    "sub_case": sub_case,
+                    "trigger_n8n": True,
+                    "data": {"text": payload.response_text, "appointment_id": row["appo_id"]}
+                }
+
         db.commit()
-        return {
-            "case": main_case,
-            "sub_case": "OTHER_STATUS",
-            "trigger_n8n": True,
-            "data": {"status": payload.status}
-        }
+        return {"case": "OTHER_STATUS", "sub_case": "NO_ACTION_TAKEN", "trigger_n8n": False}
 
     except Exception as e:
         db.rollback()
-        return {"case": "SYSTEM_ERROR", "sub_case": "EXCEPTION", "detail": str(e), "trigger_n8n": False}
+        return {"case": "SYSTEM_ERROR", "sub_case": "EXCEPTION", "detail": str(e)}
