@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from models import CustomerFeedback, Appointment
 from core.database import get_db
 from core.auth import verify_superadmin_key  # Tu función que valida el header X-Superadmin-Key
-from schemas.admin.notification import CustomerFeedback, Appointment
+from schemas.admin.notification import CreateFeedbackRowSchema, SubmitComplaintSchema
 
 router = APIRouter(prefix="/feedback", tags=["Customer Feedback"])
 
