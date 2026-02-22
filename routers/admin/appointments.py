@@ -174,11 +174,12 @@ async def update_single_send(
 @router.post("/process-whatsapp-status")
 async def process_whatsapp_status(payload: WhatsAppStatusPayload, db: Session = Depends(get_db)):
     try:
-        # 1. Consulta completa con todos los datos relacionales
+        # 1. Consulta SQL: Traemos nombre y apellido del cliente
         query = text("""
             SELECT 
                 a.id as appo_id, a.establishment_id, a.whatsapp_id, a.whatsapp_id_2,
-                c.id as customer_id, c.first_name as customer_name, c.language as cust_lang, c.phone as customer_phone,
+                c.id as customer_id, c.first_name, c.last_name, 
+                c.language as cust_lang, c.phone as customer_phone,
                 e.language as est_lang, e.contact_card as est_contact_card, e.whatsapp as est_whatsapp_number
             FROM appointments a
             JOIN customers c ON a.customer_id = c.id
@@ -190,11 +191,18 @@ async def process_whatsapp_status(payload: WhatsAppStatusPayload, db: Session = 
         if not row:
             return {"case": "NOT_FOUND", "sub_case": "UNKNOWN_ID", "trigger_n8n": False}
 
-        # Preparamos el paquete de datos extendido para n8n
+        # Creamos el nombre completo combinando nombre y apellido (manejando posibles nulos)
+        fname = row["first_name"] or ""
+        lname = row["last_name"] or ""
+        full_name = f"{fname} {lname}".strip()
+
+        # Paquete de datos extendido para n8n (para todos los casos excepto éxito simple)
         full_data = {
             "appointment_id": row["appo_id"],
             "customer_id": row["customer_id"],
-            "customer_name": row["customer_name"],
+            "customer_name": fname,
+            "customer_last_name": lname,
+            "customer_full_name": full_name,
             "customer_phone": row["customer_phone"],
             "customer_language": row["cust_lang"] or "es",
             "establishment_id": row["establishment_id"],
@@ -203,7 +211,7 @@ async def process_whatsapp_status(payload: WhatsAppStatusPayload, db: Session = 
             "establishment_whatsapp": row["est_whatsapp_number"]
         }
 
-        # --- CASO 1: Actualización de Estado (Viene 'status') ---
+        # --- CASO 1: Actualización de Estado ---
         if payload.status:
             db.execute(
                 text("UPDATE appointments SET whatsapp_status = :st WHERE id = :id"),
@@ -212,7 +220,7 @@ async def process_whatsapp_status(payload: WhatsAppStatusPayload, db: Session = 
 
             if payload.status in ["delivered", "read", "sent"]:
                 db.commit()
-                # Único caso donde NO enviamos toda la data para no saturar n8n
+                # Caso minimalista solicitado
                 return {
                     "case": "STATUS_UPDATE", 
                     "sub_case": "SUCCESS", 
@@ -236,7 +244,7 @@ async def process_whatsapp_status(payload: WhatsAppStatusPayload, db: Session = 
                     "data": {"error_code": payload.error_code, "error_title": payload.error_title, **full_data}
                 }
 
-        # --- CASO 2 & 3: Respuesta del Cliente (Viene 'response_text') ---
+        # --- CASO 2 & 3: Respuestas ---
         if payload.response_text:
             text_low = payload.response_text.lower()
             
@@ -256,7 +264,7 @@ async def process_whatsapp_status(payload: WhatsAppStatusPayload, db: Session = 
                     "data": {"response": payload.response_text, **full_data}
                 }
 
-            # CASO 3: Calidad del Servicio (Encuesta)
+            # CASO 3: Calidad del Servicio
             elif payload.whatsapp_id == row["whatsapp_id_2"]:
                 derived_response = "noshow" if "noshow" in text_low else "attended"
                 
