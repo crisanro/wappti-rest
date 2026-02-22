@@ -168,7 +168,7 @@ def toggle_customer_tag(
 
 
 
-@router.get("/{tag_id}", response_model=List[CustomerUpdate]) 
+@router.get("/tag/{tag_id}", response_model=List[CustomerUpdate]) 
 # Nota: Puedes usar CustomerUpdate o crear un Schema más ligero si solo quieres id, nombre y apellido.
 def get_customers_by_tag(
     tag_id: int,
@@ -215,4 +215,5 @@ def get_customers_by_tag(
             status_code=500, 
             detail="error_fetching_customers_by_tag"
         )
+
 
