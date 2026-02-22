@@ -51,7 +51,10 @@ class TimeProcessMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         process_time = (time_lib.perf_counter() - start_time) * 1000
         
-        print(f"⏱️  {request.method} {request.url.path} | {process_time:.2f}ms | Status: {response.status_code}")
+        # CAMBIO AQUÍ: Usamos str(request.url) en lugar de request.url.path
+        full_url = str(request.url)
+        print(f"⏱️  {request.method} | {full_url} | {process_time:.2f}ms | Status: {response.status_code}")
+        
         response.headers["X-Process-Time"] = f"{process_time:.2f}ms"
         return response
 
@@ -185,5 +188,6 @@ def health_check():
 # Note: The 'registrar_log_actividad' function has been moved to core/utils.py 
 
 # as 'register_action_log' to keep this main file clean and modular.
+
 
 
