@@ -176,13 +176,13 @@ def get_customers_by_tag(
     token_data: dict = Depends(verify_firebase_token)
 ):
     """
-    Trae todos los clientes que contienen un tag_id específico en su arreglo tag_ids.
+    Retorna solo ID, nombre y apellido de los clientes que tienen el tag indicado.
     """
     try:
         establishment_id = token_data.get('uid')
 
-        # 1. Validar que el tag existe y pertenece al establecimiento
-        tag_exists = db.query(CustomerTag).filter(
+        # 1. Validar pertenencia del tag (Seguridad)
+        tag_exists = db.query(CustomerTag.id).filter(
             CustomerTag.id == tag_id,
             CustomerTag.establishment_id == establishment_id
         ).first()
@@ -190,30 +190,27 @@ def get_customers_by_tag(
         if not tag_exists:
             raise HTTPException(status_code=404, detail="tag_not_found")
 
-        # 2. Consultar clientes usando el operador ANY para arreglos
-        # Buscamos clientes donde el tag_id esté dentro de su lista tag_ids
+        # 2. Query optimizada: Solo traemos las 3 columnas necesarias
         customers = db.query(
             Customer.id,
             Customer.first_name,
             Customer.last_name
         ).filter(
             Customer.establishment_id == establishment_id,
-            tag_id == any_(Customer.tag_ids) # Operador ANY de SQLAlchemy para arrays
+            tag_id == any_(Customer.tag_ids)
         ).all()
 
-        # Convertimos el resultado de la query (lista de tuplas) a formato diccionario/json
+        # 3. Formatear la respuesta
         return [
-            {"id": c.id, "first_name": c.first_name, "last_name": c.last_name} 
-            for c in customers
+            {
+                "id": c.id, 
+                "first_name": c.first_name, 
+                "last_name": c.last_name
+            } for c in customers
         ]
 
     except HTTPException as he:
         raise he
     except Exception as e:
-        print(f"🚨 Error al listar clientes por tag: {str(e)}")
-        raise HTTPException(
-            status_code=500, 
-            detail="error_fetching_customers_by_tag"
-        )
-
-
+        print(f"🚨 Error: {str(e)}")
+        raise HTTPException(status_code=500, detail="error_fetching_customers_by_tag")
