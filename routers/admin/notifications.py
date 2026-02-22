@@ -13,7 +13,7 @@ router = APIRouter(
 )
 
 
-@router.post("/send-notification")
+@router.post("/create-notification")
 async def send_app_notification(
     data: CreateNotificationSchema,
     db: Session = Depends(get_db),
