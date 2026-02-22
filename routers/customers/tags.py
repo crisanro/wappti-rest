@@ -163,4 +163,55 @@ def toggle_customer_tag(
         
         db.commit()
     
+
     return {"status": "success", "updated_tags": customer.tag_ids}
+
+
+
+@router.get("/{tag_id}/customers", response_model=List[CustomerUpdate]) 
+# Nota: Puedes usar CustomerUpdate o crear un Schema más ligero si solo quieres id, nombre y apellido.
+def get_customers_by_tag(
+    tag_id: int,
+    db: Session = Depends(get_db),
+    token_data: dict = Depends(verify_firebase_token)
+):
+    """
+    Trae todos los clientes que contienen un tag_id específico en su arreglo tag_ids.
+    """
+    try:
+        establishment_id = token_data.get('uid')
+
+        # 1. Validar que el tag existe y pertenece al establecimiento
+        tag_exists = db.query(CustomerTag).filter(
+            CustomerTag.id == tag_id,
+            CustomerTag.establishment_id == establishment_id
+        ).first()
+
+        if not tag_exists:
+            raise HTTPException(status_code=404, detail="tag_not_found")
+
+        # 2. Consultar clientes usando el operador ANY para arreglos
+        # Buscamos clientes donde el tag_id esté dentro de su lista tag_ids
+        customers = db.query(
+            Customer.id,
+            Customer.first_name,
+            Customer.last_name
+        ).filter(
+            Customer.establishment_id == establishment_id,
+            tag_id == any_(Customer.tag_ids) # Operador ANY de SQLAlchemy para arrays
+        ).all()
+
+        # Convertimos el resultado de la query (lista de tuplas) a formato diccionario/json
+        return [
+            {"id": c.id, "first_name": c.first_name, "last_name": c.last_name} 
+            for c in customers
+        ]
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        print(f"🚨 Error al listar clientes por tag: {str(e)}")
+        raise HTTPException(
+            status_code=500, 
+            detail="error_fetching_customers_by_tag"
+        )
