@@ -71,6 +71,7 @@ class AppNotification(Base):
     title = Column(Text)
     description = Column(Text)
     condition = Column(Text)      # ej: 'credit_low'
+    type = Column(Text)            # ej: 'system', 'marketing'
     redirection = Column(Text) # Nombre según SQL
     is_read = Column(Boolean, default=False)
 
@@ -86,4 +87,5 @@ class AppAd(Base):
     cta_url = Column(Text)
     internal_name = Column(Text)
     views_count = Column(BigInteger, default=0)
+
     hex_color = Column(Text)
