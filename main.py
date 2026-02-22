@@ -24,7 +24,7 @@ from routers.marketing import marketing, referral
 from routers.support import support, validation, firestore
 from routers.admin import appointments as admin_appointments
 from routers.admin import notifications as admin_notifications
-from routers.admin import feedback as 
+from routers.admin import feedback as admin_feedback
 
 # --- 1. CACHE DE SEGURIDAD ---
 blocked_ips_cache = set()
@@ -185,4 +185,5 @@ def health_check():
 # Note: The 'registrar_log_actividad' function has been moved to core/utils.py 
 
 # as 'register_action_log' to keep this main file clean and modular.
+
 
