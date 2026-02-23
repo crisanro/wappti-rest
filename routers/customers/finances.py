@@ -247,6 +247,7 @@ def get_customer_financial_summary(
                         "payment_id": p.id,
                         "amount": float(p.amount),
                         "method": p.payment_method,
+                        "notes": p.notes,
                         "created_at": p.created_at.astimezone(local_tz).isoformat() if p.created_at else None
                     } for p in d.payments
                 ]
@@ -267,4 +268,5 @@ def get_customer_financial_summary(
     except Exception as e:
         import traceback
         print(f"🚨 ERROR FINANCIAL GET: {traceback.format_exc()}")
+
         raise HTTPException(status_code=500, detail="INTERNAL_SERVER_ERROR_FINANCIALS")
