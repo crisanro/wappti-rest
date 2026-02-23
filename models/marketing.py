@@ -74,6 +74,7 @@ class AppNotification(Base):
     type = Column(Text)            # ej: 'system', 'marketing'
     redirection = Column(Text) # Nombre según SQL
     is_read = Column(Boolean, default=False)
+    type = Column(Text)
 
 class AppAd(Base):
     """Publicidad Global del Sistema"""
@@ -89,3 +90,4 @@ class AppAd(Base):
     views_count = Column(BigInteger, default=0)
 
     hex_color = Column(Text)
+
