@@ -70,7 +70,7 @@ def get_notifications(
                 "redirection": n.redirection or "",
                 "is_read": n.is_read,
                 "created_at": local_created_at,  # Now in local time
-                "type: n.type
+                "type": n.type
             })
 
         return result
@@ -179,3 +179,4 @@ async def register_followup(
             detail="COULD_NOT_REGISTER_FOLLOWUP"
 
         )
+
