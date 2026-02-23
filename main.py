@@ -74,7 +74,8 @@ class IPBlockerMiddleware(BaseHTTPMiddleware):
 app = FastAPI(
     title="WAPPTI API",
     description="Central connection point for business management and automation",
-    version="0.0.1"
+    version="0.0.1",
+    root_path="/api/v1"
 )
 
 
@@ -188,6 +189,7 @@ def health_check():
 # Note: The 'registrar_log_actividad' function has been moved to core/utils.py 
 
 # as 'register_action_log' to keep this main file clean and modular.
+
 
 
 
