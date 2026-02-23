@@ -69,7 +69,8 @@ def get_notifications(
                 "condition": n.condition or "",
                 "redirection": n.redirection or "",
                 "is_read": n.is_read,
-                "created_at": local_created_at  # Now in local time
+                "created_at": local_created_at,  # Now in local time
+                "type: n.type
             })
 
         return result
@@ -176,4 +177,5 @@ async def register_followup(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
             detail="COULD_NOT_REGISTER_FOLLOWUP"
+
         )
