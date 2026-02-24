@@ -72,9 +72,9 @@ async def verify_superadmin_key(
     request: Request, 
     api_key: str = Security(superadmin_key_header)
 ):
-    """Valida la Superadmin API key y la IP real del cliente."""
+    """Valida Superadmin API key considerando el túnel de Cloudflare."""
     
-    # 1. Validar la API Key
+    # 1. Validar la API Key (Tu primera línea de defensa)
     secret = os.getenv("SUPERADMIN_API_KEY")
     if not secret or api_key != secret:
         raise HTTPException(
@@ -82,27 +82,29 @@ async def verify_superadmin_key(
             detail="NOT_AUTHORIZED_SUPERADMIN_ONLY"
         )
 
-    # 2. Intentar obtener la IP real desde el header del Proxy
-    forwarded_for = request.headers.get("X-Forwarded-For")
+    # 2. Obtener la IP Real (Prioridad a Cloudflare)
+    # Cloudflare envía la IP real en 'cf-connecting-ip'
+    client_ip = request.headers.get("cf-connecting-ip")
     
-    if forwarded_for:
-        # El header puede ser una lista: "IP_Cliente, Proxy1, Proxy2"
-        # Tomamos la primera que es la del usuario original
-        client_ip = forwarded_for.split(",")[0].strip()
-    else:
-        # Si no hay header, usamos la conexión directa
-        client_ip = request.client.host
+    # Si no viene de Cloudflare, intentamos X-Forwarded-For o el host directo
+    if not client_ip:
+        forwarded_for = request.headers.get("x-forwarded-for")
+        if forwarded_for:
+            client_ip = forwarded_for.split(",")[0].strip()
+        else:
+            client_ip = request.client.host
 
-    # 3. Comparar con tu lista blanca
+    # 3. Validar contra tu Lista Blanca
     allowed_ips_str = os.getenv("ALLOWED_ADMIN_IPS", "")
-    allowed_ips = [ip.strip() for ip in allowed_ips_str.split(",") if ip.strip()]
-
-    if allowed_ips:
+    if allowed_ips_str:
+        allowed_ips = [ip.strip() for ip in allowed_ips_str.split(",") if ip.strip()]
+        
         if client_ip not in allowed_ips:
-            print(f"🚫 Bloqueado: IP detectada {client_ip} no está en {allowed_ips}")
+            # Tip: Loggea esto para que sepas qué IP bloquearon si falla
+            print(f"🚫 Acceso denegado a IP: {client_ip}. No está en la lista permitida.")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"IP_NOT_AUTHORIZED: {client_ip}" # Te sugiero mostrar la IP temporalmente para debug
+                detail=f"IP_NOT_AUTHORIZED"
             )
 
     return api_key
