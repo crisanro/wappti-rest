@@ -69,12 +69,12 @@ def verify_admin_key(api_key: str = Security(admin_key_header)):
 ALLOWED_IPS = os.getenv("ALLOWED_SUPERADMIN_IPS", "").split(",")
 
 async def verify_superadmin_key(
-    request: Request, # <--- FastAPI inyecta el objeto request automáticamente
+    request: Request, 
     api_key: str = Security(superadmin_key_header)
 ):
-    """Valida la Superadmin API key y la IP de origen."""
+    """Valida la Superadmin API key y la IP real del cliente."""
     
-    # 1. Validar la API Key primero
+    # 1. Validar la API Key
     secret = os.getenv("SUPERADMIN_API_KEY")
     if not secret or api_key != secret:
         raise HTTPException(
@@ -82,18 +82,27 @@ async def verify_superadmin_key(
             detail="NOT_AUTHORIZED_SUPERADMIN_ONLY"
         )
 
-    # 2. Validar la IP (Opcional pero recomendado)
-    # client.host extrae la IP que hace la petición
-    client_ip = request.client.host
+    # 2. Intentar obtener la IP real desde el header del Proxy
+    forwarded_for = request.headers.get("X-Forwarded-For")
     
-    # Si tienes una lista definida, verificamos que la IP esté ahí
-    if ALLOWED_IPS and ALLOWED_IPS != ['']:
-        if client_ip not in ALLOWED_IPS:
-            print(f"🚫 Intento de acceso bloqueado desde IP no autorizada: {client_ip}")
+    if forwarded_for:
+        # El header puede ser una lista: "IP_Cliente, Proxy1, Proxy2"
+        # Tomamos la primera que es la del usuario original
+        client_ip = forwarded_for.split(",")[0].strip()
+    else:
+        # Si no hay header, usamos la conexión directa
+        client_ip = request.client.host
+
+    # 3. Comparar con tu lista blanca
+    allowed_ips_str = os.getenv("ALLOWED_ADMIN_IPS", "")
+    allowed_ips = [ip.strip() for ip in allowed_ips_str.split(",") if ip.strip()]
+
+    if allowed_ips:
+        if client_ip not in allowed_ips:
+            print(f"🚫 Bloqueado: IP detectada {client_ip} no está en {allowed_ips}")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="IP_NOT_AUTHORIZED"
+                detail=f"IP_NOT_AUTHORIZED: {client_ip}" # Te sugiero mostrar la IP temporalmente para debug
             )
 
     return api_key
-
