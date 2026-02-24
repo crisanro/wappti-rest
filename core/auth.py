@@ -66,7 +66,6 @@ def verify_admin_key(api_key: str = Security(admin_key_header)):
 # C. Para Superadmin / Rutas de Batch (Usa SUPERADMIN_API_KEY)
 # Define tus IPs permitidas en el .env (separadas por comas) o aquí mismo
 # Ejemplo en .env: ALLOWED_ADMIN_IPS=1.2.3.4,5.6.7.8
-ALLOWED_IPS = os.getenv("ALLOWED_SUPERADMIN_IPS", "").split(",")
 
 async def verify_superadmin_key(
     request: Request, 
@@ -91,7 +90,7 @@ async def verify_superadmin_key(
     print(f"IP Detectada: {client_ip}")
 
     # 3. Cargar lista de IPs
-    raw_ips = os.getenv("ALLOWED_ADMIN_IPS", "")
+    raw_ips = os.getenv("ALLOWED_SUPERADMIN_IPS", "")
     allowed_ips = [ip.strip() for ip in raw_ips.split(",") if ip.strip()]
     
     print(f"IPs Permitidas en .env: {allowed_ips}")
@@ -106,3 +105,4 @@ async def verify_superadmin_key(
 
     print(f"✅ ACCESO CONCEDIDO a IP: {client_ip}")
     return api_key
+
