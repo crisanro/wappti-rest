@@ -25,6 +25,7 @@ from routers.support import support, validation, firestore
 from routers.admin import appointments as admin_appointments
 from routers.admin import notifications as admin_notifications
 from routers.admin import feedback as admin_feedback
+from routers.admin import establishments as admin_establihments
 
 # --- 1. CACHE DE SEGURIDAD ---
 blocked_ips_cache = set()
@@ -176,6 +177,7 @@ app.include_router(firestore.router, tags=["Validation"])
 app.include_router(admin_appointments.router)
 app.include_router(admin_notifications.router)
 app.include_router(admin_feedback.router)
+app.include_router(admin_establishments.router)
 
 # 7. Enhanced Health Check
 @app.get("/", tags=["System"])
@@ -189,6 +191,7 @@ def health_check():
 # Note: The 'registrar_log_actividad' function has been moved to core/utils.py 
 
 # as 'register_action_log' to keep this main file clean and modular.
+
 
 
 
