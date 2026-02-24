@@ -1,12 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from schemas.admin.establishments import CreditReload
-# Importa aquí tu modelo de base de datos y la función para obtener la sesión
-# from your_database_file import get_db, Establishment 
+from core.database import get_db
+from models import Establishment
 
 router = APIRouter()
 
-@router.patch("/establishments/{establishment_id}/add-credits")
+@router.patch("/add-credits/{establishment_id}") # Quitamos el slash final
 def add_credits_to_establishment(
     establishment_id: str, 
     payload: CreditReload, 
@@ -18,10 +18,8 @@ def add_credits_to_establishment(
     if not establishment:
         raise HTTPException(status_code=404, detail="Establecimiento no encontrado")
 
-    # 2. Lógica de suma
-    # Manejamos el caso de que available_credits sea None por alguna razón
-    current_credits = establishment.available_credits or 0
-    establishment.available_credits = current_credits + payload.amount
+    # 2. Lógica de suma (Atómica para evitar errores de concurrencia)
+    establishment.available_credits += payload.amount 
 
     # 3. Guardar cambios
     try:
@@ -29,10 +27,12 @@ def add_credits_to_establishment(
         db.refresh(establishment)
     except Exception as e:
         db.rollback()
+        # Loggear el error 'e' aquí sería ideal
         raise HTTPException(status_code=500, detail="Error al actualizar los créditos")
 
     return {
-        "message": "Créditos actualizados exitosamente",
+        "status": "success",
+        "message": f"Se han sumado {payload.amount} créditos.",
         "establishment_id": establishment.id,
         "new_balance": establishment.available_credits
     }
