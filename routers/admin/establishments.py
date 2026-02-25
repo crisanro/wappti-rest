@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from core.database import get_db
 from core.auth import verify_superadmin_key  # Reutilizamos tu validación de seguridad
-from models import Establishment, Payment, ReferralBalance              # Tu modelo de base de datos
+from models import Establishment, Payment, ReferralBalance, UsageAuditLog # Tu modelo de base de datos
 from schemas.admin.establishments import CreditReload, GlobalPaymentProcessor # El schema que creamos
 
 # 1. Configuración del Router con Seguridad de Superadmin
