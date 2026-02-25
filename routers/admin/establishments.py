@@ -94,32 +94,41 @@ def get_active_establishment_by_email(
 
 @router.post("/process-transaction")
 def process_full_transaction(payload: GlobalPaymentProcessor, db: Session = Depends(get_db)):
-    # 1. Get Payer (Customer)
+    # 1. IDEMPOTENCY CHECK (Prevent duplicate processing)
+    existing_payment = db.query(Payment).filter(Payment.id == payload.reference_id).first()
+    if existing_payment:
+        return {
+            "status": "already_processed",
+            "message": "Payment already registered",
+            "transaction_details": {"stripe_id": existing_payment.id}
+        }
+
+    # 2. VALIDATE ESTABLISHMENT
     payer = db.query(Establishment).filter(Establishment.id == payload.establishment_id).first()
     if not payer:
         raise HTTPException(status_code=404, detail="PAYER_NOT_FOUND")
 
     try:
-        # --- START TRANSACTION ---
+        # --- START ATOMIC TRANSACTION ---
         
-        # 2. History check
+        # 3. DETERMINE TIER
         payment_seq = db.query(Payment).filter(
             Payment.establishment_id == payer.id,
             Payment.is_refund == False
         ).count() + 1
 
-        # 3. Main Payment Record
+        # 4. REGISTER MAIN PAYMENT
         new_payment = Payment(
             id=payload.reference_id,
             establishment_id=payer.id,
             amount=payload.amount,
-            reason=payload.reason, # Using reason from JSON as requested
+            reason=payload.reason,
             is_refund=False
         )
         db.add(new_payment)
-        db.flush() 
+        db.flush()
 
-        # 4. Referral Logic
+        # 5. REFERRAL LOGIC (Commission)
         referral_bonus = 0
         current_rate = 0
         referrer_data = None
@@ -137,8 +146,7 @@ def process_full_transaction(payload: GlobalPaymentProcessor, db: Session = Depe
                 if referrer:
                     referral_bonus = payload.amount * current_rate
                     
-                    # GET LAST BALANCE FOR REFERRER
-                    # We use referred_customer_id to store the OWNER of the balance in your model
+                    # Get cumulative balance for Referrer
                     last_log = db.query(ReferralBalance).filter(
                         ReferralBalance.referred_customer_id == referrer.id
                     ).order_by(ReferralBalance.id.desc()).first()
@@ -146,57 +154,61 @@ def process_full_transaction(payload: GlobalPaymentProcessor, db: Session = Depe
                     prev_balance = last_log.balance if last_log else 0.0
                     new_ref_total = prev_balance + referral_bonus
                     
-                    # Update Referrer main balance
+                    # Update Referrer Balance
                     referrer.available_credits = (referrer.available_credits or 0) + referral_bonus
                     
-                    # CREATE LOG FOR REFERRER
+                    # Log Referral Balance
                     ref_log = ReferralBalance(
-                        referred_customer_id=referrer.id, # FIXED: The earner is the owner of this row
+                        referred_customer_id=referrer.id,
                         amount=referral_bonus,
                         balance=new_ref_total,
-                        reference_data=f"Stripe ID: {payload.reference_id} | From: {payer.id} | Tier: {int(current_rate*100)}%"
+                        reference_data=f"Stripe: {payload.reference_id} | From: {payer.id}"
                     )
                     db.add(ref_log)
                     db.flush()
-                    
                     new_payment.referral_payment_id = ref_log.id
                     
                     referrer_data = {
                         "id": referrer.id,
-                        "email": referrer.email,
                         "language": referrer.language or "en",
-                        "bonus_earned": referral_bonus,
-                        "new_balance": new_ref_total
+                        "bonus": referral_bonus
                     }
 
-        # 5. Add purchased credits to Payer
+        # 6. RECHARGE CREDITS TO PAYER
         payer.available_credits = (payer.available_credits or 0) + payload.credit_amount
 
+        # 7. USAGE AUDIT LOG (Control Point)
+        audit_log = UsageAuditLog(
+            establishment_id=payer.id,
+            condition="top-up", # Identified as recharge
+            value=payload.credit_amount,
+            observations=f"Successful recharge via Stripe. Ref: {payload.reference_id}"
+        )
+        db.add(audit_log)
+
+        # 8. ATOMIC COMMIT
         db.commit()
 
-        # 6. FULL RESPONSE FOR n8n
+        # 9. COMPLETE RESPONSE FOR n8n
         return {
             "status": "success",
             "transaction": {
-                "id": new_payment.id,
-                "sequence": payment_seq,
-                "amount": payload.amount,
+                "payment_number": payment_seq,
+                "stripe_id": payload.reference_id,
                 "credits_added": payload.credit_amount
             },
             "payer": {
                 "id": payer.id,
-                "email": payer.email,
                 "language": payer.language or "en",
                 "new_balance": payer.available_credits
             },
             "referral": {
                 "applied": referral_bonus > 0,
-                "rate": f"{int(current_rate*100)}%",
                 "data": referrer_data
             }
         }
 
     except Exception as e:
         db.rollback()
-        print(f"❌ ERROR: {str(e)}")
-        raise HTTPException(status_code=500, detail="TRANSACTION_FAILED")
+        print(f"❌ DATABASE TRANSACTION FAILED: {str(e)}")
+        raise HTTPException(status_code=500, detail="INTERNAL_SERVER_ERROR")
