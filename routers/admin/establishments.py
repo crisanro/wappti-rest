@@ -94,33 +94,36 @@ def get_active_establishment_by_email(
 
 @router.post("/process-transaction")
 def process_full_transaction(payload: GlobalPaymentProcessor, db: Session = Depends(get_db)):
+    # 1. Get Payer (Customer)
     payer = db.query(Establishment).filter(Establishment.id == payload.establishment_id).first()
     if not payer:
         raise HTTPException(status_code=404, detail="PAYER_NOT_FOUND")
 
     try:
-        # 1. Count sequence
+        # --- START TRANSACTION ---
+        
+        # 2. History check
         payment_seq = db.query(Payment).filter(
             Payment.establishment_id == payer.id,
             Payment.is_refund == False
         ).count() + 1
 
-        # 2. Main Payment
+        # 3. Main Payment Record
         new_payment = Payment(
             id=payload.reference_id,
             establishment_id=payer.id,
             amount=payload.amount,
-            reason=f"Credit Purchase - Pay #{payment_seq}",
+            reason=payload.reason, # Using reason from JSON as requested
             is_refund=False
         )
         db.add(new_payment)
-        db.flush()
+        db.flush() 
 
-        # 3. Referral Logic
+        # 4. Referral Logic
         referral_bonus = 0
         current_rate = 0
         referrer_data = None
-
+        
         if payer.referred_by:
             if payment_seq == 1:
                 current_rate = payload.rate_first_pay
@@ -128,63 +131,72 @@ def process_full_transaction(payload: GlobalPaymentProcessor, db: Session = Depe
                 current_rate = payload.rate_second_pay
             elif payment_seq == 3:
                 current_rate = payload.rate_third_pay
-
+            
             if current_rate > 0:
                 referrer = db.query(Establishment).filter(Establishment.id == payer.referred_by).first()
                 if referrer:
                     referral_bonus = payload.amount * current_rate
                     
-                    # ALERT: Your ReferralBalance model is missing 'establishment_id' 
-                    # to track WHO the money belongs to. 
-                    # For now, I will use 'referred_customer_id' to store the logic, 
-                    # but check your DB schema for the owner column.
-                    
-                    # Fetch last balance for the REFERRER
-                    # Note: We filter by referred_customer_id here as a placeholder 
-                    # because the earner ID column is missing in your provided model.
+                    # GET LAST BALANCE FOR REFERRER
+                    # We use referred_customer_id to store the OWNER of the balance in your model
                     last_log = db.query(ReferralBalance).filter(
-                        ReferralBalance.referred_customer_id == payer.id 
+                        ReferralBalance.referred_customer_id == referrer.id
                     ).order_by(ReferralBalance.id.desc()).first()
                     
                     prev_balance = last_log.balance if last_log else 0.0
                     new_ref_total = prev_balance + referral_bonus
-
+                    
                     # Update Referrer main balance
                     referrer.available_credits = (referrer.available_credits or 0) + referral_bonus
-
-                    # Create Log Entry
-                    # Check: Does ReferralBalance need an 'owner' column?
+                    
+                    # CREATE LOG FOR REFERRER
                     ref_log = ReferralBalance(
+                        referred_customer_id=referrer.id, # FIXED: The earner is the owner of this row
                         amount=referral_bonus,
                         balance=new_ref_total,
-                        referred_customer_id=payer.id, 
-                        reference_data=f"Stripe: {payload.reference_id} | Tier: {int(current_rate*100)}%"
+                        reference_data=f"Stripe ID: {payload.reference_id} | From: {payer.id} | Tier: {int(current_rate*100)}%"
                     )
                     db.add(ref_log)
                     db.flush()
-
+                    
                     new_payment.referral_payment_id = ref_log.id
                     
                     referrer_data = {
                         "id": referrer.id,
                         "email": referrer.email,
-                        "bonus": referral_bonus,
+                        "language": referrer.language or "en",
+                        "bonus_earned": referral_bonus,
                         "new_balance": new_ref_total
                     }
 
-        # 4. Finalize Payer Credits
+        # 5. Add purchased credits to Payer
         payer.available_credits = (payer.available_credits or 0) + payload.credit_amount
 
         db.commit()
 
+        # 6. FULL RESPONSE FOR n8n
         return {
             "status": "success",
-            "payment_sequence": payment_seq,
-            "referral_reward": referrer_data
+            "transaction": {
+                "id": new_payment.id,
+                "sequence": payment_seq,
+                "amount": payload.amount,
+                "credits_added": payload.credit_amount
+            },
+            "payer": {
+                "id": payer.id,
+                "email": payer.email,
+                "language": payer.language or "en",
+                "new_balance": payer.available_credits
+            },
+            "referral": {
+                "applied": referral_bonus > 0,
+                "rate": f"{int(current_rate*100)}%",
+                "data": referrer_data
+            }
         }
 
     except Exception as e:
         db.rollback()
-        # Log the specific error for debugging
-        print(f"❌ DATABASE TRANSACTION FAILED: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"❌ ERROR: {str(e)}")
+        raise HTTPException(status_code=500, detail="TRANSACTION_FAILED")
