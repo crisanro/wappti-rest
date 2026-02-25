@@ -92,7 +92,7 @@ def get_active_establishment_by_email(
     }
 
 
-@router.post("/process-full-transaction")
+@router.post("/process-transaction")
 def process_full_transaction(payload: GlobalPaymentProcessor, db: Session = Depends(get_db)):
     # 1. Get Payer (the one purchasing credits)
     payer = db.query(Establishment).filter(Establishment.id == payload.establishment_id).first()
