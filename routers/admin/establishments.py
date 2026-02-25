@@ -92,94 +92,109 @@ def get_active_establishment_by_email(
     }
 
 
-@router.post("/process-transaction")
+@router.post("/process-full-transaction")
 def process_full_transaction(payload: GlobalPaymentProcessor, db: Session = Depends(get_db)):
-    # 1. Validate establishment existence
-    establishment = db.query(Establishment).filter(Establishment.id == payload.establishment_id).first()
-    if not establishment:
-        raise HTTPException(status_code=404, detail="ESTABLISHMENT_NOT_FOUND")
+    # 1. Obtener el establecimiento que paga (Payer)
+    payer = db.query(Establishment).filter(Establishment.id == payload.establishment_id).first()
+    if not payer:
+        raise HTTPException(status_code=404, detail="PAYER_NOT_FOUND")
 
     try:
-        # --- DATABASE TRANSACTION START ---
+        # --- INICIO DE TRANSACCIÓN ---
         
-        # 2. Check payment sequence (excluding refunds)
-        previous_payments_count = db.query(Payment).filter(
-            Payment.establishment_id == establishment.id,
+        # 2. Contar pagos previos para determinar el nivel (Tier)
+        # Contamos solo pagos que no sean reembolsos
+        payment_seq = db.query(Payment).filter(
+            Payment.establishment_id == payer.id,
             Payment.is_refund == False
-        ).count()
+        ).count() + 1 # Este es el número de pago actual (1st, 2nd, etc.)
 
-        # 3. Create Main Payment Record
+        # 3. Registrar el Pago en la tabla 'payments'
         new_payment = Payment(
             id=payload.reference_id,
-            establishment_id=establishment.id,
+            establishment_id=payer.id,
             amount=payload.amount,
-            reason="Credit Recharge",
+            reason=f"Purchase of credits - Payment #{payment_seq}",
             invoice_link=payload.invoice_link,
             is_refund=False
         )
         db.add(new_payment)
         db.flush() 
 
-        # 4. Referral Tier Logic
+        # 4. Lógica de Comisión para el Referidor
         referral_bonus = 0
         current_rate = 0
-        referrer_id = None
+        referrer_data = None
         
-        if establishment.referred_by:
-            # Select rate based on history
-            if previous_payments_count == 0:
-                current_rate = payload.rate_first_pay
-            elif previous_payments_count == 1:
-                current_rate = payload.rate_second_pay
-            elif previous_payments_count == 2:
-                current_rate = payload.rate_third_pay
+        if payer.referred_by:
+            # Elegir porcentaje según el número de pago
+            if payment_seq == 1:
+                current_rate = payload.rate_first_pay  # 0.60
+            elif payment_seq == 2:
+                current_rate = payload.rate_second_pay # 0.30
+            elif payment_seq == 3:
+                current_rate = payload.rate_third_pay  # 0.15
             
             if current_rate > 0:
-                referrer = db.query(Establishment).filter(Establishment.id == establishment.referred_by).first()
+                referrer = db.query(Establishment).filter(Establishment.id == payer.referred_by).first()
                 if referrer:
-                    referrer_id = referrer.id
                     referral_bonus = payload.amount * current_rate
                     
-                    # Update Referrer Balance
+                    # AQUÍ: Actualizamos el saldo de comisiones del referidor
+                    # Asumo que usas 'available_credits' como billetera general, 
+                    # si tienes otra columna como 'referral_balance', cámbiala aquí:
                     referrer.available_credits = (referrer.available_credits or 0) + referral_bonus
                     
-                    # Log Referral Balance Earning
+                    # Registrar el movimiento en el historial de referidos
                     ref_log = ReferralBalance(
                         amount=referral_bonus,
                         balance=referrer.available_credits,
-                        referred_customer_id=establishment.id,
-                        reference_data=f"Tier {int(current_rate*100)}% - Pay #{previous_payments_count + 1}"
+                        referred_customer_id=payer.id,
+                        reference_data=f"Commission {int(current_rate*100)}% from {payer.email} (Payment #{payment_seq})"
                     )
                     db.add(ref_log)
                     db.flush()
                     
-                    # Link Payment with the earning log
+                    # Vincular el pago con la ganancia
                     new_payment.referral_payment_id = ref_log.id
+                    
+                    # Datos para n8n
+                    referrer_data = {
+                        "id": referrer.id,
+                        "email": referrer.email,
+                        "language": referrer.language or "en",
+                        "bonus_earned": referral_bonus
+                    }
 
-        # 5. Update Payer Balance (Credits)
-        new_establishment_balance = (establishment.available_credits or 0) + payload.amount
-        establishment.available_credits = new_establishment_balance
+        # 5. Cargar los créditos al establecimiento que pagó
+        # (Aquí es donde el cliente recibe sus recordatorios/créditos)
+        payer.available_credits = (payer.available_credits or 0) + payload.amount
 
-        # 6. ATOMIC COMMIT
+        # 6. COMMIT
         db.commit()
 
-        # 7. Response Data (Use this to trigger notifications in n8n)
+        # 7. Respuesta detallada para n8n (para tus notificaciones externas)
         return {
             "status": "success",
-            "payment_sequence": previous_payments_count + 1,
-            "applied_rate": f"{int(current_rate*100)}%",
-            "bonus_earned": referral_bonus,
-            "referrer_id": referrer_id,
-            "payer_id": establishment.id,
-            "payer_email": establishment.email,
-            "payer_new_balance": new_establishment_balance,
-            "payer_language": establishment.language # Useful for your external notifications
+            "transaction": {
+                "payment_id": new_payment.id,
+                "payment_number": payment_seq,
+                "amount_paid": payload.amount
+            },
+            "payer": {
+                "id": payer.id,
+                "email": payer.email,
+                "language": payer.language or "en",
+                "new_total_balance": payer.available_credits
+            },
+            "referral": {
+                "applied": referral_bonus > 0,
+                "rate": f"{int(current_rate*100)}%",
+                "data": referrer_data
+            }
         }
 
     except Exception as e:
         db.rollback()
-        print(f"❌ Transaction Failed: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
-            detail="DATABASE_TRANSACTION_FAILED"
-        )
+        print(f"❌ Transaction Error: {str(e)}")
+        raise HTTPException(status_code=500, detail="INTERNAL_TRANSACTION_ERROR")
