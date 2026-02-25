@@ -94,26 +94,26 @@ def get_active_establishment_by_email(
 
 @router.post("/process-transaction")
 def process_full_transaction(payload: GlobalPaymentProcessor, db: Session = Depends(get_db)):
-    # 1. Get Payer (the one purchasing credits)
+    # 1. Retrieve the Payer (Establishment purchasing credits)
     payer = db.query(Establishment).filter(Establishment.id == payload.establishment_id).first()
     if not payer:
         raise HTTPException(status_code=404, detail="PAYER_NOT_FOUND")
 
     try:
-        # --- START ATOMIC TRANSACTION ---
+        # --- DATABASE TRANSACTION START ---
         
-        # 2. Determine Payment Sequence (for tiered commissions)
+        # 2. Count successful previous payments to define the current tier
         payment_seq = db.query(Payment).filter(
             Payment.establishment_id == payer.id,
             Payment.is_refund == False
         ).count() + 1
 
-        # 3. Log the Main Payment (Financial Record)
+        # 3. Create the Main Payment Record
         new_payment = Payment(
             id=payload.reference_id,
             establishment_id=payer.id,
-            amount=payload.amount, # Actual money
-            reason=f"Purchase of {payload.credit_amount} credits - Pay #{payment_seq}",
+            amount=payload.amount,
+            reason=f"Credit Purchase - Pay #{payment_seq}",
             is_refund=False
         )
         db.add(new_payment)
@@ -125,6 +125,7 @@ def process_full_transaction(payload: GlobalPaymentProcessor, db: Session = Depe
         referrer_data = None
         
         if payer.referred_by:
+            # Select rate based on the current sequence
             if payment_seq == 1:
                 current_rate = payload.rate_first_pay
             elif payment_seq == 2:
@@ -133,62 +134,75 @@ def process_full_transaction(payload: GlobalPaymentProcessor, db: Session = Depe
                 current_rate = payload.rate_third_pay
             
             if current_rate > 0:
+                # Find the Referrer (The one earning the commission)
                 referrer = db.query(Establishment).filter(Establishment.id == payer.referred_by).first()
                 if referrer:
-                    # Calculate bonus based on money amount
                     referral_bonus = payload.amount * current_rate
                     
-                    # Add money to Referrer's balance
+                    # CUMULATIVE BALANCE LOGIC:
+                    # Get the most recent balance entry for the referrer
+                    last_log = db.query(ReferralBalance).filter(
+                        ReferralBalance.establishment_id == referrer.id
+                    ).order_by(ReferralBalance.id.desc()).first()
+                    
+                    previous_balance = last_log.balance if last_log else 0.0
+                    new_ref_total = previous_balance + referral_bonus
+                    
+                    # Update Referrer's primary balance field
                     referrer.available_credits = (referrer.available_credits or 0) + referral_bonus
                     
-                    # Log Earning
+                    # Create the Audit Row for the Referrer
                     ref_log = ReferralBalance(
-                        amount=referral_bonus,
-                        balance=referrer.available_credits,
-                        referred_customer_id=payer.id,
-                        reference_data=f"Commission {int(current_rate*100)}% - From {payer.email} (Pay #{payment_seq})"
+                        establishment_id=referrer.id,  
+                        amount=referral_bonus,         
+                        balance=new_ref_total,         
+                        referred_customer_id=payer.id, # FIXED: Using ID instead of Email
+                        reference_data=f"Stripe ID: {payload.reference_id} | Tier: {int(current_rate*100)}%"
                     )
                     db.add(ref_log)
                     db.flush()
                     
+                    # Cross-reference the payment with the commission log
                     new_payment.referral_payment_id = ref_log.id
                     
                     referrer_data = {
                         "id": referrer.id,
                         "email": referrer.email,
                         "language": referrer.language or "en",
-                        "bonus_earned": referral_bonus
+                        "bonus_earned": referral_bonus,
+                        "new_balance": new_ref_total
                     }
 
-        # 5. Add Purchased Credits to Payer
+        # 5. Credits fulfillment for the Payer
         payer.available_credits = (payer.available_credits or 0) + payload.credit_amount
 
-        # 6. COMMIT ALL CHANGES
+        # 6. ATOMIC COMMIT (Save everything or nothing)
         db.commit()
 
-        # 7. Detailed JSON response for n8n notifications
+        # 7. Final response for n8n notification triggering
         return {
             "status": "success",
-            "transaction": {
-                "payment_id": new_payment.id,
+            "transaction_details": {
+                "stripe_id": payload.reference_id,
+                "tier_applied": f"{int(current_rate*100)}%",
                 "payment_number": payment_seq,
-                "money_paid": payload.amount,
                 "credits_added": payload.credit_amount
             },
-            "payer": {
+            "payer_info": {
                 "id": payer.id,
                 "email": payer.email,
-                "language": payer.language or "en",
-                "new_total_balance": payer.available_credits
+                "language": payer.language or "en"
             },
-            "referral": {
-                "applied": referral_bonus > 0,
-                "rate": f"{int(current_rate*100)}%",
+            "referral_info": {
+                "rewarded": referral_bonus > 0,
                 "data": referrer_data
             }
         }
 
     except Exception as e:
         db.rollback()
-        print(f"❌ Transaction Error: {str(e)}")
-        raise HTTPException(status_code=500, detail="INTERNAL_TRANSACTION_ERROR")
+        print(f"❌ DATABASE TRANSACTION FAILED: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+            detail="INTERNAL_LEDGER_ERROR"
+        )
