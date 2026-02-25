@@ -94,71 +94,65 @@ def get_active_establishment_by_email(
 
 @router.post("/process-full-transaction")
 def process_full_transaction(payload: GlobalPaymentProcessor, db: Session = Depends(get_db)):
-    # 1. Obtener el establecimiento que paga (Payer)
+    # 1. Get Payer (the one purchasing credits)
     payer = db.query(Establishment).filter(Establishment.id == payload.establishment_id).first()
     if not payer:
         raise HTTPException(status_code=404, detail="PAYER_NOT_FOUND")
 
     try:
-        # --- INICIO DE TRANSACCIÓN ---
+        # --- START ATOMIC TRANSACTION ---
         
-        # 2. Contar pagos previos para determinar el nivel (Tier)
-        # Contamos solo pagos que no sean reembolsos
+        # 2. Determine Payment Sequence (for tiered commissions)
         payment_seq = db.query(Payment).filter(
             Payment.establishment_id == payer.id,
             Payment.is_refund == False
-        ).count() + 1 # Este es el número de pago actual (1st, 2nd, etc.)
+        ).count() + 1
 
-        # 3. Registrar el Pago en la tabla 'payments'
+        # 3. Log the Main Payment (Financial Record)
         new_payment = Payment(
             id=payload.reference_id,
             establishment_id=payer.id,
-            amount=payload.amount,
-            reason=f"Purchase of credits - Payment #{payment_seq}",
-            invoice_link=payload.invoice_link,
+            amount=payload.amount, # Actual money
+            reason=f"Purchase of {payload.credit_amount} credits - Pay #{payment_seq}",
             is_refund=False
         )
         db.add(new_payment)
         db.flush() 
 
-        # 4. Lógica de Comisión para el Referidor
+        # 4. Tiered Referral Commission Logic
         referral_bonus = 0
         current_rate = 0
         referrer_data = None
         
         if payer.referred_by:
-            # Elegir porcentaje según el número de pago
             if payment_seq == 1:
-                current_rate = payload.rate_first_pay  # 0.60
+                current_rate = payload.rate_first_pay
             elif payment_seq == 2:
-                current_rate = payload.rate_second_pay # 0.30
+                current_rate = payload.rate_second_pay
             elif payment_seq == 3:
-                current_rate = payload.rate_third_pay  # 0.15
+                current_rate = payload.rate_third_pay
             
             if current_rate > 0:
                 referrer = db.query(Establishment).filter(Establishment.id == payer.referred_by).first()
                 if referrer:
+                    # Calculate bonus based on money amount
                     referral_bonus = payload.amount * current_rate
                     
-                    # AQUÍ: Actualizamos el saldo de comisiones del referidor
-                    # Asumo que usas 'available_credits' como billetera general, 
-                    # si tienes otra columna como 'referral_balance', cámbiala aquí:
+                    # Add money to Referrer's balance
                     referrer.available_credits = (referrer.available_credits or 0) + referral_bonus
                     
-                    # Registrar el movimiento en el historial de referidos
+                    # Log Earning
                     ref_log = ReferralBalance(
                         amount=referral_bonus,
                         balance=referrer.available_credits,
                         referred_customer_id=payer.id,
-                        reference_data=f"Commission {int(current_rate*100)}% from {payer.email} (Payment #{payment_seq})"
+                        reference_data=f"Commission {int(current_rate*100)}% - From {payer.email} (Pay #{payment_seq})"
                     )
                     db.add(ref_log)
                     db.flush()
                     
-                    # Vincular el pago con la ganancia
                     new_payment.referral_payment_id = ref_log.id
                     
-                    # Datos para n8n
                     referrer_data = {
                         "id": referrer.id,
                         "email": referrer.email,
@@ -166,20 +160,20 @@ def process_full_transaction(payload: GlobalPaymentProcessor, db: Session = Depe
                         "bonus_earned": referral_bonus
                     }
 
-        # 5. Cargar los créditos al establecimiento que pagó
-        # (Aquí es donde el cliente recibe sus recordatorios/créditos)
-        payer.available_credits = (payer.available_credits or 0) + payload.amount
+        # 5. Add Purchased Credits to Payer
+        payer.available_credits = (payer.available_credits or 0) + payload.credit_amount
 
-        # 6. COMMIT
+        # 6. COMMIT ALL CHANGES
         db.commit()
 
-        # 7. Respuesta detallada para n8n (para tus notificaciones externas)
+        # 7. Detailed JSON response for n8n notifications
         return {
             "status": "success",
             "transaction": {
                 "payment_id": new_payment.id,
                 "payment_number": payment_seq,
-                "amount_paid": payload.amount
+                "money_paid": payload.amount,
+                "credits_added": payload.credit_amount
             },
             "payer": {
                 "id": payer.id,
