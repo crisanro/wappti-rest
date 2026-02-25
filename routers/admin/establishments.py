@@ -61,3 +61,32 @@ def add_credits_to_establishment(
             "new_balance": establishment.available_credits
         }
     }
+
+@router.get("/search-by-email")
+def get_active_establishment_by_email(
+    email: str, 
+    db: Session = Depends(get_db)
+):
+    """
+    Find the single active establishment for a given email.
+    """
+    establishment = db.query(Establishment).filter(
+        Establishment.email == email,
+        Establishment.is_deleted == False
+    ).first()
+
+    if not establishment:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="ACTIVE_ESTABLISHMENT_NOT_FOUND"
+        )
+
+    return {
+        "status": "success",
+        "data": {
+            "id": establishment.id,
+            "name": establishment.name,
+            "email": establishment.email,
+            "available_credits": establishment.available_credits
+        }
+    }
