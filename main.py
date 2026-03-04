@@ -6,9 +6,7 @@ from core.database import SessionLocal
 
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-# Asegúrate de importar SessionLocal y BlockedIP de tus archivos
-# from database import SessionLocal 
-# from models import BlockedIP
+import traceback
 
 import time as time_lib
 
@@ -34,7 +32,6 @@ def update_blocked_ips_cache():
     """Consulta la DB y actualiza el set en memoria"""
     db = SessionLocal()
     try:
-        # Obtenemos solo las IPs activas
         blocked = db.query(SystemBlockedIP.ip_address).filter(SystemBlockedIP.is_active == True).all()
         global blocked_ips_cache
         blocked_ips_cache = {ip[0] for ip in blocked}
@@ -52,9 +49,15 @@ class TimeProcessMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         process_time = (time_lib.perf_counter() - start_time) * 1000
         
-        # CAMBIO AQUÍ: Usamos str(request.url) en lugar de request.url.path
         full_url = str(request.url)
-        print(f"⏱️  {request.method} | {full_url} | {process_time:.2f}ms | Status: {response.status_code}")
+        
+        # 🔴 Resalta visualmente los errores en consola
+        if response.status_code >= 500:
+            print(f"💥 {request.method} | {full_url} | {process_time:.2f}ms | Status: {response.status_code}")
+        elif response.status_code >= 400:
+            print(f"⚠️  {request.method} | {full_url} | {process_time:.2f}ms | Status: {response.status_code}")
+        else:
+            print(f"⏱️  {request.method} | {full_url} | {process_time:.2f}ms | Status: {response.status_code}")
         
         response.headers["X-Process-Time"] = f"{process_time:.2f}ms"
         return response
@@ -79,18 +82,16 @@ app = FastAPI(
     root_path="/api/v1"
 )
 
+# =================================================================
+# 🛡️ EXCEPTION HANDLERS - Captura y muestra todos los errores
+# =================================================================
 
-# =================================================================
-# 🚀 PEGA EL EXCEPTION HANDLER AQUÍ (Justo después de 'app')
-# =================================================================
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    """
-    Este bloque atrapará el error 422 y te mostrará en la consola
-    exactamente qué campo falló y qué datos envió el cliente.
-    """
+    """Captura errores 422 - Campos inválidos o faltantes"""
     print("\n" + "="*50)
-    print("❌ VALIDATION ERROR DETECTED")
+    print("❌ VALIDATION ERROR (422)")
+    print(f"🌐 URL: {request.method} {request.url}")
     print(f"📝 Errors: {exc.errors()}")
     print(f"📦 Body Sent: {exc.body}")
     print("="*50 + "\n")
@@ -102,23 +103,52 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
             "body_received": exc.body
         },
     )
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """Captura errores HTTP conocidos (403, 404, 401, etc.)"""
+    print("\n" + "="*50)
+    print(f"🚨 HTTP ERROR ({exc.status_code})")
+    print(f"🌐 URL: {request.method} {request.url}")
+    print(f"📝 Detail: {exc.detail}")
+    print("="*50 + "\n")
+
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail}
+    )
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Captura cualquier error inesperado (500)"""
+    print("\n" + "="*50)
+    print("💥 UNHANDLED EXCEPTION (500)")
+    print(f"🌐 URL: {request.method} {request.url}")
+    print(f"❌ Error Type: {type(exc).__name__}")
+    print(f"📝 Message: {str(exc)}")
+    print(f"🔍 Traceback:\n{traceback.format_exc()}")
+    print("="*50 + "\n")
+    
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": type(exc).__name__,
+            "message": str(exc)
+        }
+    )
+
 # =================================================================
 
 # --- 4. EVENTOS DE SISTEMA ---
 @app.on_event("startup")
 async def startup_event():
-    # Carga las IPs al arrancar el servidor
     update_blocked_ips_cache()
 
 # --- 5. ENDPOINTS DE SISTEMA ---
 
 @app.post("/system/refresh-blacklist", tags=["System"])
 async def refresh_blacklist(x_system_key: str = Header(None)):
-    """
-    Refresca el cache de IPs. 
-    Protegido por una simple Header Key para evitar abusos.
-    """
-    # Define una clave secreta en tus variables de entorno idealmente
+    """Refresca el cache de IPs. Protegido por Header Key."""
     SYSTEM_KEY = "tu_clave_secreta_aqui" 
     
     if x_system_key != SYSTEM_KEY:
@@ -130,12 +160,9 @@ async def refresh_blacklist(x_system_key: str = Header(None)):
         "current_cache_size": len(blocked_ips_cache)
     }
 
-# 4. CONFIGURACIÓN DE MIDDLEWARES (Orden estratégico)
-# El de tiempo envuelve a todos para medir el ciclo completo
+# --- 6. CONFIGURACIÓN DE MIDDLEWARES (Orden estratégico) ---
 app.add_middleware(TimeProcessMiddleware) 
-# Luego la seguridad
 app.add_middleware(IPBlockerMiddleware)
-# Finalmente CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -144,8 +171,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 6. Router Registration
-# Organized with professional English prefixes
+# --- 7. REGISTRO DE ROUTERS ---
 app.include_router(base_estab.router, prefix="/establishment", tags=["Establishments"])
 app.include_router(activity.router, prefix="/establishment", tags=["Establishments"])
 app.include_router(profile.router, prefix="/profile", tags=["Establishments"])
@@ -172,14 +198,12 @@ app.include_router(support.router, prefix="/support", tags=["Support & Feedback"
 app.include_router(validation.router, prefix="/validation", tags=["Validation"])
 app.include_router(firestore.router, tags=["Validation"])
 
-# --- ADMIN SECTION ---
-# No es necesario pasar Depends aquí de nuevo porque ya lo pusimos en la definición del Router
 app.include_router(admin_appointments.router)
 app.include_router(admin_notifications.router)
 app.include_router(admin_feedback.router)
 app.include_router(admin_establishments.router)
 
-# 7. Enhanced Health Check
+# --- 8. HEALTH CHECK ---
 @app.get("/", tags=["System"])
 def health_check():
     return {
@@ -187,13 +211,3 @@ def health_check():
         "version": app.version, 
         "server_time": "UTC",
     }
-
-# Note: The 'registrar_log_actividad' function has been moved to core/utils.py 
-
-# as 'register_action_log' to keep this main file clean and modular.
-
-
-
-
-
-
