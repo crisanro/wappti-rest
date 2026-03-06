@@ -4,8 +4,8 @@ from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from sqlalchemy import text
-
+from sqlalchemy import text, and_, or_
+from models import Appointment, Establishment, Customer
 from core.database import get_db
 from core.auth import verify_superadmin_key  # Tu función que valida el header X-Superadmin-Key
 from schemas.admin.appointment import AppointmentConfirmation, SingleUpdatePayload, WhatsAppStatusPayload
@@ -126,48 +126,223 @@ async def get_pending_appointments_batch(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/update-single-send", status_code=status.HTTP_200_OK)
-async def update_single_send(
-    payload: SingleUpdatePayload, # Recibimos el JSON aquí
+@router.get("/pending-attendance-checks", status_code=status.HTTP_200_OK)
+async def get_pending_attendance_checks(
+    hours_min: float,
+    hours_max: float,
     db: Session = Depends(get_db),
     _ : str = Depends(verify_superadmin_key)
 ):
     """
-    Actualiza cita y créditos mediante un cuerpo JSON.
+    Busca citas para verificar asistencia con estados específicos.
+    Condiciones adicionales:
+    - response_text debe ser 'sent' o 'confirmed'.
+    - datetime optimizado para evitar deprecación.
     """
     try:
-        # Usamos payload.campo para acceder a los datos
-        query = text("""
-            WITH updated_appo AS (
-                UPDATE appointments 
-                SET response_text = 'sent', whatsapp_id = :w_id 
-                WHERE id = :a_id AND response_text = 'pending'
-                RETURNING id
+        # ✅ Uso de timezone-aware objects
+        now = datetime.now(timezone.utc)
+        start_range = now - timedelta(hours=hours_max)
+        end_range = now - timedelta(hours=hours_min)
+
+        # Definimos los estados permitidos
+        allowed_statuses = ['sent', 'confirmed']
+
+        query = db.query(
+            Appointment.id.label("appointment_id"),
+            Appointment.appointment_date,
+            Appointment.whatsapp_id,
+            Appointment.establishment_id,
+            Appointment.response_text,
+            Establishment.header_signature,
+            Customer.first_name,
+            Customer.phone,
+            Customer.country_code,
+            Customer.language
+        ).join(
+            Establishment, Appointment.establishment_id == Establishment.id
+        ).join(
+            Customer, Appointment.customer_id == Customer.id
+        ).filter(
+            and_(
+                # Rango de tiempo
+                Appointment.appointment_date >= start_range,
+                Appointment.appointment_date <= end_range,
+                # Solo estados 'sent' o 'confirmed'
+                Appointment.response_text.in_(allowed_statuses),
+                # Validación de WhatsApp ID
+                Appointment.whatsapp_id.isnot(None),
+                Appointment.whatsapp_id != "",
+                # Seguridad
+                Establishment.is_deleted == False,
+                Establishment.is_suspended == False
             )
-            UPDATE establishments 
-            SET available_credits = available_credits - 1
-            WHERE id = :e_id AND EXISTS (SELECT 1 FROM updated_appo);
-        """)
-        
+        ).order_by(Appointment.appointment_date.asc())
+
+        results = query.all()
+
+        formatted_results = []
+        for row in results:
+            formatted_results.append({
+                "appointment_id": row.appointment_id,
+                "appointment_date": row.appointment_date,
+                "whatsapp_id": row.whatsapp_id,
+                "response_text": row.response_text,
+                "establishment_id": row.establishment_id,
+                "header_signature": row.header_signature,
+                "customer_name": row.first_name,
+                "customer_language": row.language,
+                "customer_phone": f"+{row.country_code}{row.phone}"
+            })
+
+        return {
+            "status": "success",
+            "count": len(formatted_results),
+            "data": formatted_results,
+            "range_utc": {
+                "from": start_range.isoformat(),
+                "to": end_range.isoformat()
+            }
+        }
+
+    except Exception as e:
+        print(f"❌ Error en pending-attendance-checks: {e}")
+        raise HTTPException(status_code=500, detail="QUERY_FAILED")
+
+
+@router.get("/past-confirmed-appointments", status_code=status.HTTP_200_OK)
+async def get_past_confirmed_appointments(
+    hours_min: float, # Ej: 1.0 (hace una hora)
+    hours_max: float, # Ej: 24.0 (hace un día)
+    db: Session = Depends(get_db),
+    _ : str = Depends(verify_superadmin_key)
+):
+    """
+    Busca citas que YA PASARON y quedaron en estado 'confirmed'.
+    Rango: (Ahora - hours_max) hasta (Ahora - hours_min)
+    """
+    try:
+        now = datetime.utcnow()
+        # Definimos el rango en el pasado
+        # Si hours_min es 1, end_range es hace 1 hora.
+        # Si hours_max es 24, start_range es hace 24 horas.
+        start_range = now - timedelta(hours=hours_max)
+        end_range = now - timedelta(hours=hours_min)
+
+        query = db.query(
+            Appointment.id.label("appointment_id"),
+            Appointment.appointment_date,
+            Appointment.whatsapp_id,
+            Appointment.establishment_id,
+            Establishment.header_signature,
+            Customer.first_name,
+            Customer.language,
+            Customer.phone,
+            Customer.country_code
+        ).join(
+            Establishment, Appointment.establishment_id == Establishment.id
+        ).join(
+            Customer, Appointment.customer_id == Customer.id
+        ).filter(
+            and_(
+                # 1. Filtro de tiempo (en el pasado)
+                Appointment.appointment_date >= start_range,
+                Appointment.appointment_date <= end_range,
+                # 2. Solo las que fueron confirmadas pero no se ha procesado su asistencia
+                Appointment.response_text == 'confirmed',
+                # 3. Que tengan un ID de WhatsApp previo
+                Appointment.whatsapp_id.isnot(None),
+                Appointment.whatsapp_id != "",
+                # 4. Seguridad del establecimiento
+                Establishment.is_deleted == False,
+                Establishment.is_suspended == False
+            )
+        ).order_by(Appointment.appointment_date.asc()) # De la más antigua a la más reciente
+
+        results = query.all()
+
+        formatted_results = []
+        for row in results:
+            formatted_results.append({
+                "appointment_id": row.appointment_id,
+                "appointment_date": row.appointment_date,
+                "whatsapp_id": row.whatsapp_id,
+                "establishment_id": row.establishment_id,
+                "header_signature": row.header_signature,
+                "customer_language": row.language,
+                "customer_name": row.first_name,
+                "customer_phone": f"+{row.country_code}{row.phone}"
+            })
+
+        return {
+            "status": "success",
+            "count": len(formatted_results),
+            "data": formatted_results,
+            "meta": {
+                "analyzed_from": start_range,
+                "analyzed_until": end_range,
+                "server_time_utc": now
+            }
+        }
+
+    except Exception as e:
+        print(f"❌ Error consultando citas pasadas: {e}")
+        raise HTTPException(status_code=500, detail="PAST_QUERY_FAILED")
+
+
+@router.post("/update-single-send", status_code=status.HTTP_200_OK)
+async def update_single_send(
+    payload: SingleUpdatePayload,
+    db: Session = Depends(get_db),
+    _ : str = Depends(verify_superadmin_key)
+):
+    try:
+        if payload.update_type == "reminder":
+            # ESCENARIO 1: Recordatorio (Resta crédito)
+            new_status = 'sent'
+            # Usamos una CTE que actualiza la cita y LUEGO resta el crédito
+            query = text("""
+                WITH updated_appo AS (
+                    UPDATE appointments 
+                    SET response_text = :status, whatsapp_id = :w_id
+                    WHERE id = :a_id AND establishment_id = :e_id
+                    RETURNING id
+                )
+                UPDATE establishments 
+                SET available_credits = available_credits - 1
+                WHERE id = :e_id AND EXISTS (SELECT 1 FROM updated_appo);
+            """)
+        else:
+            # ESCENARIO 2: Asistencia (NO resta crédito)
+            new_status = 'unconfirmed'
+            # Actualización simple de la tabla appointments solamente
+            query = text("""
+                UPDATE appointments 
+                SET response_text = :status, whatsapp_id_2 = :w_id
+                WHERE id = :a_id AND establishment_id = :e_id;
+            """)
+
         result = db.execute(query, {
             "a_id": payload.appointment_id, 
             "w_id": payload.whatsapp_id, 
-            "e_id": payload.establishment_id
+            "e_id": payload.establishment_id,
+            "status": new_status
         })
         
         db.commit()
 
+        # Verificamos si hubo cambios
         if result.rowcount == 0:
             return {
-                "status": "already_processed", 
-                "message": "La cita no existe, ya fue enviada o el local es incorrecto."
+                "status": "not_modified", 
+                "message": "No se encontró la cita o el establecimiento no coincide."
             }
 
-        return {"status": "success"}
+        return {"status": "success", "type": payload.update_type}
 
     except Exception as e:
         db.rollback()
-        print(f"❌ Error actualizando cita {payload.appointment_id}: {e}")
+        print(f"❌ Error en update_single_send ({payload.update_type}): {e}")
         raise HTTPException(status_code=500, detail="SINGLE_UPDATE_FAILED")
 
 

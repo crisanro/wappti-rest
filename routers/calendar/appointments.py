@@ -6,7 +6,8 @@ from datetime import datetime, timezone, timedelta, time
 import pytz
 from typing import Optional, List
 import traceback
-
+import httpx
+import os
 from core.database import get_db
 from core.auth import verify_firebase_token
 from core.utils import register_action_log
@@ -96,8 +97,19 @@ def get_appointments(
         raise HTTPException(status_code=500, detail="internal_server_error")
 
 
+# Función auxiliar para enviar al Webhook (puedes ponerla en un archivo de utils)
+async def trigger_next_appointment_webhook(payload: dict):
+    webhook_url = os.getenv("WEBHOOK_NEXT_APPOINTMENT_URL")
+    if not webhook_url:
+        return
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(webhook_url, json=payload, timeout=5.0)
+    except Exception as e:
+        print(f"🔗 Error enviando al webhook: {e}")
+
 @router.post("/", status_code=201)
-def insert_appointment(
+async def insert_appointment( # Cambiado a async para el webhook
     data: AppointmentCreate, 
     request: Request, 
     db: Session = Depends(get_db), 
@@ -107,9 +119,7 @@ def insert_appointment(
         establishment_id = token_data.get('uid')
 
         # --- VALIDACIONES DE SEGURIDAD ---
-        
-        # 1. Validar que el Perfil (Profile) pertenezca al establecimiento
-        # Asumiendo que tu tabla de perfiles tiene la columna establishment_id
+        # 1. Validar Perfil
         profile_check = db.query(Profile).filter(
             Profile.id == data.profile_id, 
             Profile.establishment_id == establishment_id
@@ -118,48 +128,72 @@ def insert_appointment(
         if not profile_check:
             raise HTTPException(status_code=403, detail="profile_not_owned_by_user")
 
-        # 2. Validar que el Cliente (Customer) pertenezca al establecimiento
-        # Asumiendo que tu tabla de clientes tiene la columna establishment_id
-        customer_check = db.query(Customer).filter(
+        # 2. Validar Cliente y obtener sus datos (phone, name)
+        customer = db.query(Customer).filter(
             Customer.id == data.customer_id, 
             Customer.establishment_id == establishment_id
         ).first()
         
-        if not customer_check:
+        if not customer:
             raise HTTPException(status_code=403, detail="customer_not_owned_by_user")
 
-        # --- FIN DE VALIDACIONES ---
+        # --- LÓGICA DE FILTRO PARA WEBHOOK (24 Horas) ---
+        # Buscamos si existe una cita previa del mismo cliente en las últimas 24h 
+        # que tenga whatsapp_id (es decir, que se le envió mensaje)
+        time_threshold = datetime.now(pytz.UTC) - timedelta(hours=24)
+        
+        recent_appointment = db.query(Appointment).filter(
+            Appointment.customer_id == data.customer_id,
+            Appointment.whatsapp_id.isnot(None),
+            Appointment.whatsapp_id != "",
+            Appointment.created_at >= time_threshold
+        ).order_by(Appointment.created_at.desc()).first()
 
-        # 1. Manejo de Zona Horaria
+        # --- MANEJO DE FECHA DE LA NUEVA CITA ---
         user_tz = pytz.timezone(data.timezone_region)
         naive_date = data.appointment_date.replace(tzinfo=None)
         localized_date = user_tz.localize(naive_date)
         utc_date = localized_date.astimezone(pytz.UTC)
 
-        # 2. Creación del objeto Appointment
+        # --- CREACIÓN ---
         new_appointment = Appointment(
             **data.model_dump(exclude={"appointment_date", "timezone_region"}),
             appointment_date=utc_date,
             establishment_id=establishment_id,
             created_at=datetime.now(pytz.UTC),
             response_text="pending",
-            whatsapp_status=None # Aprovechamos para inicializar el status de whatsapp
+            whatsapp_status=None
         )
 
         db.add(new_appointment)
         db.flush() 
 
+        # --- DISPARAR WEBHOOK SI CUMPLE LA CONDICIÓN ---
+        if recent_appointment:
+            # Obtenemos la firma del establecimiento para el mensaje
+            est = db.query(Establishment).filter(Establishment.id == establishment_id).first()
+            
+            # Preparamos el payload con los datos que pediste
+            webhook_payload = {
+                "customer_phone": f"{customer.country_code}{customer.phone}",
+                "customer_name": f"{customer.first_name} {customer.last_name}",
+                "customer_language": customer.language or est.language or "es",
+                "establishment_header": est.header_signature,
+                "appointment_date_local": localized_date.strftime("%Y-%m-%d %H:%M"),
+                "appointment_id": new_appointment.id,
+                "trigger_type": "FOLLOW_UP_24H"
+            }
+            # Lo enviamos de forma asíncrona para no bloquear la respuesta del API
+            import asyncio
+            asyncio.create_task(trigger_next_appointment_webhook(webhook_payload))
+
         # 3. LOG DE AUDITORÍA
         register_action_log(
-            db=db,
-            establishment_id=establishment_id,
-            action="CREATE_APPOINTMENT",
-            method="POST",
-            path=request.url.path,
+            db=db, establishment_id=establishment_id, action="CREATE_APPOINTMENT",
+            method="POST", path=request.url.path,
             payload={
                 "appointment_id": new_appointment.id,
                 "customer_id": data.customer_id,
-                "profile_id": data.profile_id,
                 "date_utc": utc_date.isoformat(),
             },
             request=request
@@ -171,7 +205,6 @@ def insert_appointment(
         return {"status": "success", "id": new_appointment.id}
 
     except HTTPException as he:
-        # Re-lanzamos las excepciones de validación (403)
         raise he
     except Exception as e:
         db.rollback()

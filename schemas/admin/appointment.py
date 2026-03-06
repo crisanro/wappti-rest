@@ -11,6 +11,7 @@ class SingleUpdatePayload(BaseModel):
     appointment_id: int
     whatsapp_id: str
     establishment_id: str
+    update_type: str = "reminder"
 
 
 class WhatsAppStatusPayload(BaseModel):

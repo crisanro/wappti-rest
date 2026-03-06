@@ -106,3 +106,27 @@ async def verify_superadmin_key(
     print(f"✅ ACCESO CONCEDIDO a IP: {client_ip}")
     return api_key
 
+
+# D. Para Administradores Humanos (Usa JWT + Whitelist de UIDs)
+def verify_app_admin(token_data: dict = Depends(verify_firebase_token)):
+    """
+    Verifica que el usuario logueado en la App sea un Administrador autorizado.
+    Depende de verify_firebase_token, así que primero valida que el JWT sea real.
+    """
+    # 1. Obtener la lista de UIDs permitidos desde el .env
+    raw_uids = os.getenv("ALLOWED_ADMIN_UIDS", "")
+    allowed_uids = [uid.strip() for uid in raw_uids.split(",") if uid.strip()]
+
+    # 2. Extraer el UID del token decodificado
+    user_uid = token_data.get("uid")
+
+    # 3. Validar si el usuario está en la "Lista Blanca"
+    if user_uid not in allowed_uids:
+        print(f"❌ ACCESO DENEGADO: El UID {user_uid} no es Administrador.")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="NOT_AUTHORIZED_ADMIN_ONLY"
+        )
+
+    print(f"✅ ACCESO ADMIN CONCEDIDO: {user_uid}")
+    return token_data
