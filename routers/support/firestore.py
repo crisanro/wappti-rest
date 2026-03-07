@@ -1,6 +1,7 @@
 import os
 import httpx
 import random
+import pytz
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -20,7 +21,7 @@ from core.utils import register_action_log
 # Models & Schemas
 from models import (
     WhatsAppAuthPin, ReferralCode, Establishment, 
-    UsageAuditLog, AppNotification, SystemAudit
+    UsageAuditLog, AppNotification, SystemAudit, ReferralMKTCampaigns
 )
 from schemas.validation import (
     CheckPhoneSchema, PinRequestSchema, 
@@ -226,22 +227,7 @@ async def validate_and_activate(
             })
             raise HTTPException(status_code=403, detail="SECURITY_PHONE_MISMATCH")
 
-        # 3. Validación de Referido (SOLO EXISTENCIA)
-        ref_record = None
-        if data.referred_by:
-            # Validamos que el ID del referido pertenezca a un código real en la DB
-            ref_record = db.query(ReferralCode).filter(ReferralCode.id == data.referred_by).first()
-            
-            if not ref_record:
-                # Si el ID no existe, es un intento de usar un código inválido
-                await notify_log("ALERT_INVALID_REF_ID", user_id, {"id_sent": data.referred_by})
-                raise HTTPException(status_code=400, detail="INVALID_REFERRAL_CODE")
-            
-            # (Opcional) Evitar que se refiera a sí mismo si eso rompe tu lógica
-            if ref_record.id == user_id:
-                raise HTTPException(status_code=400, detail="CANNOT_REFER_YOURSELF")
-
-        # 4. Lógica de PIN e Intentos
+        # 3. Lógica de PIN e Intentos (Se mantiene igual)
         attempts = list(record.validation_attempts or [])
         if len(attempts) >= 3:
             raise HTTPException(status_code=429, detail="TOO_MANY_ATTEMPTS")
@@ -253,47 +239,85 @@ async def validate_and_activate(
             db.commit() 
             raise HTTPException(status_code=400, detail={"msg": "INVALID_PIN", "attempts": len(attempts)})
 
-        # --- BLOQUE DE ACTIVACIÓN (Transaccional) ---
-        reward = 20 if ref_record else 10
-        ref_id = ref_record.id if ref_record else None
+        # --- NUEVA LÓGICA DE RECOMPENSAS POR REFERIDOS/CAMPAÑAS ---
         
-        # A. Sincronización Firestore (Créditos iniciales)
+        reward = 10  # Recompensa base
+        final_ref_id = None
+        is_marketing = False
+
+        if data.referred_by:
+            # A. Primero buscamos si es una Campaña de Marketing
+            # El prefijo "CAMP_" nos ayuda a identificarlo si lo guardaste así en /link-referral
+            campaign_id_clean = data.referred_by.replace("CAMP_", "")
+            
+            campaign = None
+            if data.referred_by.startswith("CAMP_") or data.referred_by.isdigit():
+                campaign = db.query(ReferralMKTCampaigns).filter(
+                    ReferralMKTCampaigns.id == int(campaign_id_clean)
+                ).first()
+
+            if campaign:
+                reward = 10 + campaign.bonus_credits  # 10 base + bono (ej. 10) = 20
+                final_ref_id = f"CAMP_{campaign.id}"
+                is_marketing = True
+                
+                # Actualizamos lista de la campaña
+                camp_list = list(campaign.used_by_list or [])
+                if user_id not in camp_list:
+                    camp_list.append(user_id)
+                    campaign.used_by_list = camp_list
+                    flag_modified(campaign, "used_by_list")
+            
+            else:
+                # B. Si no es campaña, buscamos si es Referido Humano
+                ref_record = db.query(ReferralCode).filter(ReferralCode.id == data.referred_by).first()
+                if ref_record:
+                    reward = 20  # Recompensa estándar por referido humano
+                    final_ref_id = ref_record.id
+                    
+                    # Actualizar contador del dueño del código
+                    ref_record.user_count = (ref_record.user_count or 0) + 1
+                    ref_list = list(ref_record.users_list or [])
+                    if user_id not in ref_list:
+                        ref_list.append(user_id)
+                        ref_record.users_list = ref_list
+                        flag_modified(ref_record, "users_list")
+
+        # --- BLOQUE DE ACTIVACIÓN FINAL ---
+
+        # 1. Sincronización Firestore (Créditos iniciales)
         if not update_user_reminders(user_id, reward):
             raise Exception("FIRESTORE_SYNC_FAILED")
 
-        # B. SQL: Actualizar Contador del dueño del código
-        if ref_record:
-            ref_record.user_count = (ref_record.user_count or 0) + 1
-            # Añadimos a la lista para mantener registro, pero ya no bloqueamos arriba
-            new_list = list(ref_record.users_list or [])
-            if user_id not in new_list:
-                new_list.append(user_id)
-                ref_record.users_list = new_list
-                flag_modified(ref_record, "users_list")
-
-        # C. SQL: Actualizar Establecimiento
+        # 2. SQL: Actualizar Establecimiento
         db.query(Establishment).filter(Establishment.id == user_id).update({
             "country": data.country,
             "whatsapp": str(data.phone),
             "created_at": datetime.now(timezone.utc),
-            "referred_by": ref_id,
+            "referred_by": final_ref_id,
             "available_credits": Establishment.available_credits + reward,
             "is_suspended": False
         }, synchronize_session=False)
 
-        # D. SQL: Audit Log
+        # 3. SQL: Audit Log
+        observations = f"Welcome bonus"
+        if is_marketing:
+            observations += f" (MKT Campaign: {final_ref_id})"
+        elif final_ref_id:
+            observations += f" (Ref: {final_ref_id})"
+
         db.add(UsageAuditLog(
             establishment_id=user_id, 
             condition="top-up", 
             value=reward, 
-            observations=f"Welcome bonus{' (Ref: ' + str(ref_id) + ')' if ref_id else ''}"
+            observations=observations
         ))
         
-        # E. Finalizar proceso de activación
+        # 4. Finalizar proceso
         record.is_activated = True
         db.commit()
 
-        return {"complete": True, "reward_applied": reward}
+        return {"complete": True, "reward_applied": reward, "type": "marketing" if is_marketing else "standard"}
 
     except HTTPException as he:
         raise he
@@ -301,6 +325,7 @@ async def validate_and_activate(
         db.rollback()
         await notify_log("ERROR_ACTIVATION_SYSTEM", user_id, {"error": str(e)})
         raise HTTPException(status_code=500, detail="INTERNAL_SERVER_ERROR")
+    
 
 # --- 4. LINK REFERRAL CODE ---
 @router.post("/link-referral")
@@ -320,82 +345,92 @@ async def link_referral_code(
             raise HTTPException(status_code=404, detail="ESTABLISHMENT_NOT_FOUND")
         
         if establishment.referred_by:
-            await notify_log("ALERT_REFERRAL_RE-LINK_ATTEMPT", establishment_id, {"code": clean_code})
             raise HTTPException(status_code=400, detail="ALREADY_REFERRED")
 
-        # 2. Búsqueda del código de referido
-        referral_record = db.query(ReferralCode).filter(ReferralCode.code == clean_code).first()
-        if not referral_record:
-            await notify_log("ALERT_INVALID_REFERRAL_CODE", establishment_id, {"attempted_code": clean_code})
+        # 2. BÚSQUEDA JERÁRQUICA
+        # A. Intentar buscar en Campañas de Marketing
+        campaign = db.query(ReferralMKTCampaigns).filter(
+            ReferralMKTCampaigns.code == clean_code
+        ).first()
+
+        if campaign:
+            # Validamos si tiene fecha de expiración y si ya pasó
+            if campaign.expires_at and datetime.now(pytz.UTC) > campaign.expires_at:
+                await notify_log("ALERT_EXPIRED_CAMPAIGN_ATTEMPT", establishment_id, {"code": clean_code})
+                # Lanzamos un error específico para que el usuario sepa que llegó tarde
+                raise HTTPException(
+                    status_code=400, 
+                    detail="CAMPAIGN_EXPIRED"
+                )
+            # Si pasó la validación de fecha, 'campaign' sigue teniendo el objeto y el código continúa...
+        # B. Si no es campaña, buscar en Referidos Humanos
+        referral_record = None
+        if not campaign:
+            referral_record = db.query(ReferralCode).filter(ReferralCode.code == clean_code).first()
+
+        if not campaign and not referral_record:
+            await notify_log("ALERT_INVALID_CODE", establishment_id, {"attempted": clean_code})
             raise HTTPException(status_code=404, detail="INVALID_CODE")
 
-        # --- ALERTAS DE SEGURIDAD ---
-        # A. Evitar Auto-referido
-        if referral_record.id == establishment_id:
-            await notify_log("ALERT_SELF_REFERRAL_ATTEMPT", establishment_id, {"id": referral_record.id})
+        # 3. LÓGICA DE VINCULACIÓN (Security Checks)
+        
+        # Evitar que el usuario use su propio código humano
+        if referral_record and referral_record.id == establishment_id:
             raise HTTPException(status_code=400, detail="CANNOT_REFER_YOURSELF")
 
-        # B. Evitar duplicados (Protección de doble canje)
-        current_users = list(referral_record.users_list or [])
-        if establishment_id in current_users:
-             await notify_log("ALERT_DUPLICATE_LINK_ATTEMPT", establishment_id, {"ref_id": referral_record.id})
-             raise HTTPException(status_code=400, detail="REFERRAL_ALREADY_CLAIMED")
+        # Verificar si ya usó esta campaña específica anteriormente
+        if campaign:
+            current_campaign_users = list(campaign.used_by_list or [])
+            if establishment_id in current_campaign_users:
+                raise HTTPException(status_code=400, detail="CAMPAIGN_ALREADY_USED")
+            
+            # Asignamos el ID de la campaña (convertido a string para la FK de referred_by)
+            # Nota: Al ser INT, podrías usar un prefijo "CAMP_" o simplemente guardarlo.
+            establishment.referred_by = f"CAMP_{campaign.id}"
+            
+            # Actualizamos la lista de la campaña
+            current_campaign_users.append(establishment_id)
+            campaign.used_by_list = current_campaign_users
+            flag_modified(campaign, "used_by_list")
+            
+        else:
+            # Lógica para referido humano
+            current_ref_users = list(referral_record.users_list or [])
+            if establishment_id in current_ref_users:
+                 raise HTTPException(status_code=400, detail="REFERRAL_ALREADY_CLAIMED")
+            
+            establishment.referred_by = referral_record.id
+            referral_record.user_count = (referral_record.user_count or 0) + 1
+            current_ref_users.append(establishment_id)
+            referral_record.users_list = current_ref_users
+            flag_modified(referral_record, "users_list")
 
-        # 3. Lógica de Actualización SQL
-        establishment.referred_by = referral_record.id
-        referral_record.user_count = (referral_record.user_count or 0) + 1
-        
-        # Actualización del Array (TEXT[])
-        current_users.append(establishment_id)
-        referral_record.users_list = current_users
-        flag_modified(referral_record, "users_list")
-
-        # 4. Sincronización Firestore
+        # 4. Sincronización Firestore (Opcional, manteniendo tu lógica)
         try:
             if db_firestore:
                 user_ref = db_firestore.collection("users").document(establishment_id)
                 user_ref.update({
-                    "Referido": referral_record.id,
+                    "Referido": establishment.referred_by,
                     "referral_code_used": clean_code,
+                    "is_marketing_campaign": campaign is not None,
                     "updated_at": datetime.now(timezone.utc)
                 })
         except Exception as fs_error:
-            # Notificamos si Firestore falla pero seguimos con SQL
-            await notify_log("ERROR_FIRESTORE_SYNC_REFERRAL", establishment_id, {"error": str(fs_error)})
+            await notify_log("ERROR_FS_SYNC", establishment_id, {"error": str(fs_error)})
 
         db.commit()
 
-        # 5. Notificación de Éxito al Webhook
-        await notify_log("LOG_REFERRAL_LINKED", establishment_id, {
-            "owner_id": referral_record.id,
-            "code_used": clean_code,
-            "new_count": referral_record.user_count
-        })
-
-        # 6. Audit Log en SQL
-        register_action_log(
-            db=db, establishment_id=establishment_id, action="REFERRAL_LINKED", 
-            method="POST", path=request.url.path, 
-            payload={"owner_id": referral_record.id, "code": clean_code}, 
-            request=request
-        )
-
+        # 5. Respuesta
         return {
             "status": "success", 
-            "referral_id": referral_record.id,
-            "message": f"Linked to {clean_code}"
+            "type": "marketing" if campaign else "human",
+            "message": "Code linked. Benefits will activate upon WhatsApp verification."
         }
         
     except HTTPException as he:
         raise he
     except Exception as e:
         db.rollback()
-        # Alerta de error de sistema al celular
-        await notify_log("ERROR_REFERRAL_SYSTEM_CRITICAL", establishment_id, {
-            "error": str(e),
-            "trace": traceback.format_exc()[-500:]
-        })
-        print(f"🚨 REFERRAL LINK ERROR:\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="INTERNAL_SERVER_ERROR")
 
 

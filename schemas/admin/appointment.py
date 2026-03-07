@@ -20,3 +20,7 @@ class WhatsAppStatusPayload(BaseModel):
     response_text: Optional[str] = ""
     error_code: Optional[str] = None
     error_title: Optional[str] = None
+
+
+class AppointmentReminderUpdate(BaseModel):
+    whatsapp_id_reminder: str

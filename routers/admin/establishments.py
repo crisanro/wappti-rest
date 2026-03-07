@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from core.database import get_db
 from core.auth import verify_superadmin_key  # Reutilizamos tu validación de seguridad
-from models import Establishment, Payment, ReferralBalance, UsageAuditLog # Tu modelo de base de datos
+from models import Establishment, Payment, ReferralBalance, UsageAuditLog, ReferralMKTCampaigns # Tu modelo de base de datos
 from schemas.admin.establishments import CreditReload, GlobalPaymentProcessor # El schema que creamos
 
 # 1. Configuración del Router con Seguridad de Superadmin
@@ -94,14 +94,10 @@ def get_active_establishment_by_email(
 
 @router.post("/process-transaction")
 def process_full_transaction(payload: GlobalPaymentProcessor, db: Session = Depends(get_db)):
-    # 1. IDEMPOTENCY CHECK (Prevent duplicate processing)
+    # 1. IDEMPOTENCY CHECK
     existing_payment = db.query(Payment).filter(Payment.id == payload.reference_id).first()
     if existing_payment:
-        return {
-            "status": "already_processed",
-            "message": "Payment already registered",
-            "transaction_details": {"stripe_id": existing_payment.id}
-        }
+        return {"status": "already_processed", "transaction_details": {"stripe_id": existing_payment.id}}
 
     # 2. VALIDATE ESTABLISHMENT
     payer = db.query(Establishment).filter(Establishment.id == payload.establishment_id).first()
@@ -111,7 +107,7 @@ def process_full_transaction(payload: GlobalPaymentProcessor, db: Session = Depe
     try:
         # --- START ATOMIC TRANSACTION ---
         
-        # 3. DETERMINE TIER
+        # 3. DETERMINE TIER (Basado en historial de pagos exitosos)
         payment_seq = db.query(Payment).filter(
             Payment.establishment_id == payer.id,
             Payment.is_refund == False
@@ -128,84 +124,79 @@ def process_full_transaction(payload: GlobalPaymentProcessor, db: Session = Depe
         db.add(new_payment)
         db.flush()
 
-        # 5. REFERRAL LOGIC (Commission)
+        # 5. REFERRAL & MARKETING LOGIC
         referral_bonus = 0
-        current_rate = 0
         referrer_data = None
         
         if payer.referred_by:
-            if payment_seq == 1:
-                current_rate = payload.rate_first_pay
-            elif payment_seq == 2:
-                current_rate = payload.rate_second_pay
-            elif payment_seq == 3:
-                current_rate = payload.rate_third_pay
-            
-            if current_rate > 0:
-                referrer = db.query(Establishment).filter(Establishment.id == payer.referred_by).first()
-                if referrer:
-                    referral_bonus = payload.amount * current_rate
-                    
-                    # Get cumulative balance for Referrer
-                    last_log = db.query(ReferralBalance).filter(
-                        ReferralBalance.referred_customer_id == referrer.id
-                    ).order_by(ReferralBalance.id.desc()).first()
-                    
-                    prev_balance = last_log.balance if last_log else 0.0
-                    new_ref_total = prev_balance + referral_bonus
-                    
-                    # Update Referrer Balance
-                    referrer.available_credits = (referrer.available_credits or 0) + referral_bonus
-                    
-                    # Log Referral Balance
-                    ref_log = ReferralBalance(
-                        referred_customer_id=referrer.id,
-                        amount=referral_bonus,
-                        balance=new_ref_total,
-                        reference_data=f"Stripe: {payload.reference_id} | From: {payer.id}"
-                    )
-                    db.add(ref_log)
-                    db.flush()
-                    new_payment.referral_payment_id = ref_log.id
-                    
-                    referrer_data = {
-                        "id": referrer.id,
-                        "language": referrer.language or "en",
-                        "bonus": referral_bonus
-                    }
+            # CASO A: Es una Campaña de Marketing (ID empieza con CAMP_)
+            if str(payer.referred_by).startswith("CAMP_"):
+                camp_id = int(payer.referred_by.replace("CAMP_", ""))
+                campaign = db.query(ReferralMKTCampaigns).filter(ReferralMKTCampaigns.id == camp_id).first()
+                if campaign:
+                    # Aquí podrías aplicar lógica extra si la campaña da descuentos 
+                    # o créditos extra por cada compra, no solo al inicio.
+                    referrer_data = {"type": "marketing", "id": campaign.id, "name": campaign.name}
+
+            # CASO B: Es un Referido Humano
+            else:
+                current_rate = 0
+                if payment_seq == 1: current_rate = payload.rate_first_pay
+                elif payment_seq == 2: current_rate = payload.rate_second_pay
+                elif payment_seq == 3: current_rate = payload.rate_third_pay
+                
+                if current_rate > 0:
+                    referrer = db.query(Establishment).filter(Establishment.id == payer.referred_by).first()
+                    if referrer:
+                        referral_bonus = payload.amount * current_rate
+                        
+                        # Actualizar Balance Acumulado del Referente (Cashback/Comisión)
+                        last_log = db.query(ReferralBalance).filter(
+                            ReferralBalance.referred_customer_id == referrer.id
+                        ).order_by(ReferralBalance.id.desc()).first()
+                        
+                        prev_balance = last_log.balance if last_log else 0.0
+                        new_ref_total = prev_balance + referral_bonus
+                        
+                        # Update Referrer (Aquí podrías decidir si le das créditos o dinero)
+                        # referrer.available_credits += referral_bonus 
+                        
+                        ref_log = ReferralBalance(
+                            referred_customer_id=referrer.id,
+                            amount=referral_bonus,
+                            balance=new_ref_total,
+                            reference_data=f"Stripe: {payload.reference_id} | From: {payer.id}"
+                        )
+                        db.add(ref_log)
+                        db.flush()
+                        new_payment.referral_payment_id = ref_log.id
+                        
+                        referrer_data = {
+                            "type": "human",
+                            "id": referrer.id,
+                            "bonus": referral_bonus
+                        }
 
         # 6. RECHARGE CREDITS TO PAYER
         payer.available_credits = (payer.available_credits or 0) + payload.credit_amount
 
-        # 7. USAGE AUDIT LOG (Control Point)
+        # 7. USAGE AUDIT LOG
         audit_log = UsageAuditLog(
             establishment_id=payer.id,
-            condition="top-up", # Identified as recharge
+            condition="top-up",
             value=payload.credit_amount,
             observations=f"Successful recharge via Stripe. Ref: {payload.reference_id}"
         )
         db.add(audit_log)
 
-        # 8. ATOMIC COMMIT
+        # 8. COMMIT
         db.commit()
 
-        # 9. COMPLETE RESPONSE FOR n8n
         return {
             "status": "success",
-            "transaction": {
-                "payment_number": payment_seq,
-                "stripe_id": payload.reference_id,
-                "credits_added": payload.credit_amount
-            },
-            "payer": {
-                "id": payer.id,
-                "language": payer.language or "en",
-                "new_balance": payer.available_credits
-            },
-            "referral": {
-                "applied": referral_bonus > 0,
-                "data": referrer_data
-            }
+            "transaction": {"payment_number": payment_seq, "stripe_id": payload.reference_id},
+            "payer": {"id": payer.id, "new_balance": payer.available_credits},
+            "referral_info": referrer_data
         }
 
     except Exception as e:

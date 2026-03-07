@@ -24,6 +24,7 @@ from routers.admin import appointments as admin_appointments
 from routers.admin import notifications as admin_notifications
 from routers.admin import feedback as admin_feedback
 from routers.admin import establishments as admin_establishments
+from routers.admin import control as admin_control
 from routers.admin_app import admin as admin_dash
 from routers.admin_app import finance as finance_dash
 
@@ -204,6 +205,7 @@ app.include_router(admin_appointments.router)
 app.include_router(admin_notifications.router)
 app.include_router(admin_feedback.router)
 app.include_router(admin_establishments.router)
+app.include_router(admin_control.router)
 app.include_router(finance_dash.router)
 
 app.include_router(admin_dash.router)

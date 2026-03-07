@@ -34,7 +34,7 @@ from .marketing import (
     WhatsAppSession, 
     WhatsAppError, 
     AppNotification, 
-    AppAd
+    AppAd, ReferralMKTCampaigns
 )
 
 from .system import (

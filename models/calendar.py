@@ -24,7 +24,7 @@ class Appointment(Base):
     whatsapp_id = Column(Text)
     whatsapp_id_2 = Column(Text) 
     whatsapp_status = Column(Text)
-
+    whatsapp_id_reminder = Column(Text)
     # Relaciones
     customer = relationship("Customer", back_populates="appointments")
     # Si quieres poder acceder al local desde la cita:

@@ -19,3 +19,9 @@ class GlobalPaymentProcessor(BaseModel):
     rate_first_pay: float = 0.60 
     rate_second_pay: float = 0.30
     rate_third_pay: float = 0.15
+
+class AuditLogCreate(BaseModel):
+    establishment_id: str
+    condition: str
+    value: int
+    observations: Optional[str] = None

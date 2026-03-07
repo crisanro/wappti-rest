@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, Boolean, DateTime, BigInteger, Integer, ForeignKey, func
+from sqlalchemy import Column, String, Text, Boolean, DateTime, BigInteger, Integer, ForeignKey, func, ARRAY
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 from core.database import Base
@@ -90,4 +90,20 @@ class AppAd(Base):
     views_count = Column(BigInteger, default=0)
 
     hex_color = Column(Text)
+
+class ReferralMKTCampaigns(Base):
+    __tablename__ = "referral_mkt_campaigns"
+
+    # ID secuencial automático
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    name = Column(Text) # Ej: "Campana Lanzamiento Marzo"
+    code = Column(Text, unique=True) # Ej: "wappti20"
+
+    bonus_credits = Column(BigInteger, default=10) # El "extra" sobre los 10 base
+    is_active = Column(Boolean, default=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Almacenamos los IDs (strings) de los locales que han activado este código
+    used_by_list = Column(ARRAY(String), default=[]) 
 
