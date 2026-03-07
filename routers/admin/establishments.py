@@ -94,10 +94,13 @@ def get_active_establishment_by_email(
 
 @router.post("/process-transaction")
 def process_full_transaction(payload: GlobalPaymentProcessor, db: Session = Depends(get_db)):
-    # 1. IDEMPOTENCY CHECK
+    # 1. IDEMPOTENCY CHECK (409 Conflict es mejor que 200 si ya existe)
     existing_payment = db.query(Payment).filter(Payment.id == payload.reference_id).first()
     if existing_payment:
-        return {"status": "already_processed", "transaction_details": {"stripe_id": existing_payment.id}}
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, 
+            detail="PAYMENT_ALREADY_PROCESSED"
+        )
 
     # 2. VALIDATE ESTABLISHMENT
     payer = db.query(Establishment).filter(Establishment.id == payload.establishment_id).first()
@@ -106,14 +109,11 @@ def process_full_transaction(payload: GlobalPaymentProcessor, db: Session = Depe
 
     try:
         # --- START ATOMIC TRANSACTION ---
-        
-        # 3. DETERMINE TIER (Basado en historial de pagos exitosos)
         payment_seq = db.query(Payment).filter(
             Payment.establishment_id == payer.id,
             Payment.is_refund == False
         ).count() + 1
 
-        # 4. REGISTER MAIN PAYMENT
         new_payment = Payment(
             id=payload.reference_id,
             establishment_id=payer.id,
@@ -129,17 +129,16 @@ def process_full_transaction(payload: GlobalPaymentProcessor, db: Session = Depe
         referrer_data = None
         
         if payer.referred_by:
-            # CASO A: Es una Campaña de Marketing (ID empieza con CAMP_)
             if str(payer.referred_by).startswith("CAMP_"):
-                camp_id = int(payer.referred_by.replace("CAMP_", ""))
-                campaign = db.query(ReferralMKTCampaigns).filter(ReferralMKTCampaigns.id == camp_id).first()
-                if campaign:
-                    # Aquí podrías aplicar lógica extra si la campaña da descuentos 
-                    # o créditos extra por cada compra, no solo al inicio.
-                    referrer_data = {"type": "marketing", "id": campaign.id, "name": campaign.name}
-
-            # CASO B: Es un Referido Humano
+                camp_id_str = payer.referred_by.replace("CAMP_", "")
+                if camp_id_str.isdigit():
+                    campaign = db.query(ReferralMKTCampaigns).filter(
+                        ReferralMKTCampaigns.id == int(camp_id_str)
+                    ).first()
+                    if campaign:
+                        referrer_data = {"type": "marketing", "id": campaign.id, "name": campaign.name}
             else:
+                # Lógica Humana
                 current_rate = 0
                 if payment_seq == 1: current_rate = payload.rate_first_pay
                 elif payment_seq == 2: current_rate = payload.rate_second_pay
@@ -149,17 +148,12 @@ def process_full_transaction(payload: GlobalPaymentProcessor, db: Session = Depe
                     referrer = db.query(Establishment).filter(Establishment.id == payer.referred_by).first()
                     if referrer:
                         referral_bonus = payload.amount * current_rate
-                        
-                        # Actualizar Balance Acumulado del Referente (Cashback/Comisión)
                         last_log = db.query(ReferralBalance).filter(
                             ReferralBalance.referred_customer_id == referrer.id
                         ).order_by(ReferralBalance.id.desc()).first()
                         
                         prev_balance = last_log.balance if last_log else 0.0
                         new_ref_total = prev_balance + referral_bonus
-                        
-                        # Update Referrer (Aquí podrías decidir si le das créditos o dinero)
-                        # referrer.available_credits += referral_bonus 
                         
                         ref_log = ReferralBalance(
                             referred_customer_id=referrer.id,
@@ -170,26 +164,17 @@ def process_full_transaction(payload: GlobalPaymentProcessor, db: Session = Depe
                         db.add(ref_log)
                         db.flush()
                         new_payment.referral_payment_id = ref_log.id
-                        
-                        referrer_data = {
-                            "type": "human",
-                            "id": referrer.id,
-                            "bonus": referral_bonus
-                        }
+                        referrer_data = {"type": "human", "id": referrer.id, "bonus": referral_bonus}
 
-        # 6. RECHARGE CREDITS TO PAYER
+        # 6. RECHARGE & AUDIT
         payer.available_credits = (payer.available_credits or 0) + payload.credit_amount
-
-        # 7. USAGE AUDIT LOG
-        audit_log = UsageAuditLog(
+        db.add(UsageAuditLog(
             establishment_id=payer.id,
             condition="top-up",
             value=payload.credit_amount,
             observations=f"Successful recharge via Stripe. Ref: {payload.reference_id}"
-        )
-        db.add(audit_log)
+        ))
 
-        # 8. COMMIT
         db.commit()
 
         return {
@@ -201,5 +186,10 @@ def process_full_transaction(payload: GlobalPaymentProcessor, db: Session = Depe
 
     except Exception as e:
         db.rollback()
+        # Logueamos el error interno para nosotros
         print(f"❌ DATABASE TRANSACTION FAILED: {str(e)}")
-        raise HTTPException(status_code=500, detail="INTERNAL_SERVER_ERROR")
+        # Pero al cliente le damos un 400 si es un error de datos o 500 si es el servidor
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, 
+            detail=f"TRANSACTION_FAILED: {str(e)}"
+        )
