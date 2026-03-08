@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-
+from sqlalchemy import desc
 from core.database import get_db
 from core.auth import verify_superadmin_key  # Reutilizamos tu validación de seguridad
 from models import Establishment, Payment, ReferralBalance, UsageAuditLog, ReferralMKTCampaigns # Tu modelo de base de datos
@@ -63,17 +63,23 @@ def add_credits_to_establishment(
     }
 
 @router.get("/search-by-email")
-def get_active_establishment_by_email(
+def get_latest_active_establishment_by_email(
     email: str, 
     db: Session = Depends(get_db)
 ):
     """
-    Find the single active establishment for a given email.
+    Busca el establecimiento activo más reciente para un correo dado,
+    ordenado por fecha de creación descendente.
     """
+    # Limpiamos el email por si viene con espacios
+    clean_email = email.strip().lower()
+
     establishment = db.query(Establishment).filter(
-        Establishment.email == email,
+        Establishment.email == clean_email,
         Establishment.is_deleted == False
-    ).first()
+    ).order_by(
+        desc(Establishment.created_at) # Ordenamos: del más nuevo al más viejo
+    ).first() # Tomamos el primero de esa lista (el más reciente)
 
     if not establishment:
         raise HTTPException(
@@ -87,10 +93,11 @@ def get_active_establishment_by_email(
             "id": establishment.id,
             "name": establishment.name,
             "email": establishment.email,
-            "available_credits": establishment.available_credits
+            "available_credits": establishment.available_credits,
+            "created_at": establishment.created_at
         }
     }
-
+    
 
 @router.post("/process-transaction")
 def process_full_transaction(payload: GlobalPaymentProcessor, db: Session = Depends(get_db)):
