@@ -431,8 +431,8 @@ async def link_referral_code(
         raise he
     except Exception as e:
         db.rollback()
-        print(f"DEBUG_ERROR: {str(e)}") # Esto saldrá en tus logs de Dokploy
-        raise HTTPException(status_code=500, detail=f"INTERNAL_SERVER_ERROR: {str(e)}")
+        # Aquí puedes usar sentry_sdk.capture_exception(e) si lo tienes configurado
+        raise HTTPException(status_code=500, detail="INTERNAL_SERVER_ERROR")
 
 
 @router.post("/reset-registration-phone")
