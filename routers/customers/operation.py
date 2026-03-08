@@ -158,27 +158,3 @@ def get_customer_operation_history(
     except Exception as e:
 
         raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/countries")
-def get_active_countries(db: Session = Depends(get_db)):
-    """
-    Obtiene la lista de países activos para selectores de registro o configuración.
-    """
-    # Buscamos solo los que tienen active = True
-    countries = db.query(Country).filter(Country.active == True).all()
-
-    # Si no hay países activos, devolvemos una lista vacía con status success
-    # o podrías lanzar una 404 si prefieres.
-    return {
-        "status": "success",
-        "count": len(countries),
-        "data": [
-            {
-                "name": c.name,
-                "dial_code": c.dial_code,
-                "code": c.code
-            }
-            for c in countries
-        ]
-    }
