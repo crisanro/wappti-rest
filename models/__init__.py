@@ -6,7 +6,7 @@ from .customer import (
     Customer,
     CustomerTag,
     CustomerHistory,
-    CustomerFeedback, CustomerPlanItem, CustomerPlan, CustomerDebt, CustomerPayment
+    CustomerFeedback, CustomerPlanItem, CustomerPlan, CustomerDebt, CustomerPayment, Country
 )
 
 from .establishments import (
@@ -52,4 +52,5 @@ from .system import (
 from .kipu import (CustomerBillingProfile)
 
 # Metadata centralizada para migraciones de Alembic
+
 metadata = Base.metadata
