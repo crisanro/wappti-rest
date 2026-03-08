@@ -431,7 +431,8 @@ async def link_referral_code(
         raise he
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail="INTERNAL_SERVER_ERROR")
+        print(f"DEBUG_ERROR: {str(e)}") # Esto saldrá en tus logs de Dokploy
+        raise HTTPException(status_code=500, detail=f"INTERNAL_SERVER_ERROR: {str(e)}")
 
 
 @router.post("/reset-registration-phone")
