@@ -6,14 +6,19 @@ services:
     container_name: manager_api_prod
     ports:
       - "8000:8000"
-    # Cargamos el archivo .env (solo para local, en Dokploy se configuran en el panel)
-    env_file:
-      - .env
-    environment:
-      - DEBUG=False           # Seguridad ante todo
+    # No escribimos las variables aquí. 
+    # Dokploy las inyectará desde su panel de "Environment Variables".
+    
+    deploy:
+      resources:
+        limits:
+          cpus: '0.80'          # Límite máximo (techo)
+          memory: 1024M        # 1GB de RAM máximo
+        reservations:
+          cpus: '0.25'          # Reserva garantizada (piso)
+          memory: 256M
 
     restart: always
-
     networks:
       - red_infraestructura
 

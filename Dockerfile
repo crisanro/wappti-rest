@@ -29,4 +29,4 @@ EXPOSE 8000
 # Usamos Gunicorn para manejar los procesos en producción
 # -w 4: 4 procesos simultáneos (ideal para servidores de 1-2 CPUs)
 # -k uvicorn.workers.UvicornWorker: Clase de worker para que FastAPI vuele
-CMD ["gunicorn", "-w", "4", "-k", "uvicorn.workers.UvicornWorker", "main:app", "--bind", "0.0.0.0:8000"]
+CMD ["gunicorn", "-w", "2", "-k", "uvicorn.workers.UvicornWorker", "main:app", "--bind", "0.0.0.0:8000", "--timeout", "90", "--max-requests", "500"]

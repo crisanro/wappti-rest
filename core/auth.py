@@ -43,8 +43,10 @@ def verify_firebase_token(auth_cred: HTTPAuthorizationCredentials = Depends(secu
     """Validates the Firebase JWT token and returns the decoded payload."""
     token = auth_cred.credentials
     try:
-        decoded_token = auth.verify_id_token(token)
+        decoded_token = auth.verify_id_token(token, check_revoked=True)
         return decoded_token
+    except auth.RevokedIdTokenError:
+        raise HTTPException(status_code=401, detail="Token has been revoked")
     except Exception:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
