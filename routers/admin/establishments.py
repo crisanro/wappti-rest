@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from sqlalchemy import desc, func
 from core.database import get_db
 from core.auth import verify_superadmin_key  # Reutilizamos tu validación de seguridad
 from models import Establishment, Payment, ReferralBalance, UsageAuditLog, ReferralMKTCampaigns # Tu modelo de base de datos
@@ -68,18 +68,18 @@ def get_latest_active_establishment_by_email(
     db: Session = Depends(get_db)
 ):
     """
-    Busca el establecimiento activo más reciente para un correo dado,
-    ordenado por fecha de creación descendente.
+    Busca el establecimiento activo más reciente ignorando mayúsculas/minúsculas.
     """
-    # Limpiamos el email por si viene con espacios
+    # 1. Normalizamos el correo de entrada
     clean_email = email.strip().lower()
 
+    # 2. Buscamos usando func.lower en la columna de la DB
     establishment = db.query(Establishment).filter(
-        Establishment.email == clean_email,
+        func.lower(Establishment.email) == clean_email,
         Establishment.is_deleted == False
     ).order_by(
-        desc(Establishment.created_at) # Ordenamos: del más nuevo al más viejo
-    ).first() # Tomamos el primero de esa lista (el más reciente)
+        desc(Establishment.created_at)
+    ).first()
 
     if not establishment:
         raise HTTPException(
@@ -92,9 +92,8 @@ def get_latest_active_establishment_by_email(
         "data": {
             "id": establishment.id,
             "name": establishment.name,
-            "email": establishment.email,
-            "available_credits": establishment.available_credits,
-            "created_at": establishment.created_at
+            "email": establishment.email, # Devolvemos el original guardado
+            "available_credits": establishment.available_credits
         }
     }
     
