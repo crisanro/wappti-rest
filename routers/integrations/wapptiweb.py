@@ -5,7 +5,7 @@ from core.database import get_db
 # Asumo que tienes tu modelo de SQLAlchemy definido en core.models
 from models import EstablishmentReview 
 from schemas.integrations import ReviewOut
-from core.auth import verify_exclusive_wappti_site
+from core.auth import verify_internal_key
 
 router = APIRouter()
 
@@ -23,8 +23,11 @@ def sanitize_comment(text: str) -> str:
 
 # --- 3. El Endpoint ---
 @router.get("/latest-reviews", response_model=list[ReviewOut])
-def get_latest_reviews( db: Session = Depends(get_db), _security: bool = Depends(verify_exclusive_wappti_site)):
-    # Traemos las 10 más recientes ordenadas por created_at
+def get_latest_reviews(
+    db: Session = Depends(get_db), 
+    # Ahora usamos la validación de la llave del Proxy
+    _security: bool = Depends(verify_internal_key) 
+):
     reviews = (
         db.query(EstablishmentReview)
         .order_by(desc(EstablishmentReview.created_at))
@@ -32,7 +35,6 @@ def get_latest_reviews( db: Session = Depends(get_db), _security: bool = Depends
         .all()
     )
 
-    # Aplicamos el filtro de palabras a cada una
     for r in reviews:
         r.comment = sanitize_comment(r.comment)
         r.customer_name = sanitize_comment(r.customer_name)
