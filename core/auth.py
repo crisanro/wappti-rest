@@ -134,21 +134,21 @@ def verify_app_admin(token_data: dict = Depends(verify_firebase_token)):
     return token_data
 
 
-def verify_exclusive_wappti_site(
-    origin: str = Header(None), 
-    referer: str = Header(None)
-):
+def verify_internal_key(x_wappti_key: str = Header(None)):
     """
-    Solo permite la ejecución si el tráfico viene del dominio oficial.
+    Valida que la petición incluya la llave secreta inyectada por el Proxy (Nginx).
+    Si alguien intenta entrar directo a la API sin pasar por la web, será bloqueado.
     """
-    allowed = "wappti.app"
-    
-    # Comprobamos si el dominio está presente en los headers de navegación
-    is_valid = (origin and allowed in origin) or (referer and allowed in referer)
+    # Obtenemos la llave de tu archivo .env
+    master_key = os.getenv("INTERNAL_WAPPTI_KEY")
 
-    if not is_valid:
+    # Si no hay llave en el .env (error de config) o no coincide con el header
+    if not master_key or x_wappti_key != master_key:
+        print(f"❌ Intento de acceso no autorizado. Header recibido: {x_wappti_key}")
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Acceso denegado: Este recurso es exclusivo de wappti.app"
+            detail="Acceso denegado: Petición no autorizada por el Proxy oficial."
         )
+    
+    # Si todo coincide, permitimos el paso
     return True
