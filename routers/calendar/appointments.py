@@ -257,6 +257,7 @@ def get_upcoming_appointments(
             result.append({
                 "id": a.id,
                 "customer_id": a.customer_id,
+                "profile_id": a.profile_id,
                 "appointment_date": local_date.isoformat(),
                 "reason": a.reason,
                 "whatsapp_id": a.whatsapp_id,
@@ -470,4 +471,5 @@ def delete_appointment(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="DATABASE_ERROR_ON_DELETE"
+
         )
