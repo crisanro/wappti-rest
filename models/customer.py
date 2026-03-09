@@ -55,7 +55,9 @@ class CustomerHistory(Base):
     process_name = Column(Text)
     income = Column(Float, default=0.0) # double precision en SQL
     notes = Column(Text)
-
+    expenses = Column(Float, default=0.0, server_default="0") # Gasto incurrido
+    invoice_id = Column(Text, nullable=True) # ID de la factura de Kipu o referencia
+    
     customer = relationship("Customer", back_populates="history")
 
 class CustomerFeedback(Base):

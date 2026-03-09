@@ -1,7 +1,7 @@
 import os
 import firebase_admin
 from firebase_admin import credentials, auth
-from fastapi import HTTPException, Depends, status, Security, Request
+from fastapi import HTTPException, Depends, status, Security, Request, Header
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, APIKeyHeader
 from dotenv import load_dotenv
 
@@ -132,3 +132,23 @@ def verify_app_admin(token_data: dict = Depends(verify_firebase_token)):
 
     print(f"✅ ACCESO ADMIN CONCEDIDO: {user_uid}")
     return token_data
+
+
+def verify_exclusive_wappti_site(
+    origin: str = Header(None), 
+    referer: str = Header(None)
+):
+    """
+    Solo permite la ejecución si el tráfico viene del dominio oficial.
+    """
+    allowed = "wappti.app"
+    
+    # Comprobamos si el dominio está presente en los headers de navegación
+    is_valid = (origin and allowed in origin) or (referer and allowed in referer)
+
+    if not is_valid:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Acceso denegado: Este recurso es exclusivo de wappti.app"
+        )
+    return True

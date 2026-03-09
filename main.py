@@ -26,6 +26,7 @@ from routers.establishments import base as base_estab
 from routers.establishments import activity, financials, profile, tags
 from routers.integrations import kipu
 from routers.marketing import marketing, referral
+from routers.integrations import wapptiweb
 from routers.support import support, validation, firestore
 from routers.admin import appointments as admin_appointments
 from routers.admin import notifications as admin_notifications
@@ -204,6 +205,7 @@ app.include_router(operation.router, prefix="/operation", tags=["Operations"])
 app.include_router(appointments.router, prefix="/appointments", tags=["Operations"])
 app.include_router(notes.router, prefix="/notes", tags=["Operations"])
 app.include_router(marketing.router, prefix="/marketing", tags=["Marketing"])
+app.include_router(wapptiweb.router, prefix="/marketing", tags=["Marketing"])
 app.include_router(referral.router, prefix="/referral", tags=["Marketing"])
 app.include_router(whatsapp.router, prefix="/whatsapp", tags=["WhatsApp & Notifications"])
 app.include_router(notifications.router, prefix="/notifications", tags=["WhatsApp & Notifications"])

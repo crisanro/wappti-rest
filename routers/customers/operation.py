@@ -81,9 +81,9 @@ def get_operation_history(
                 "created_at": r.created_at.astimezone(local_tz).isoformat(),
                 "process_name": r.process_name,
                 "income": float(r.income) if r.income else 0.0,
+                "expenses": float(r.expenses) if r.expenses else 0.0,
                 "profile_id": r.profile_id,
                 "customer_id": r.customer_id,
-                "notes": r.notes
             }
             for r in records
         ]
@@ -103,11 +103,13 @@ def add_service_record(
     token_data: dict = Depends(verify_firebase_token)
 ):
     """
-    Registers a new service or sale linked to a customer and an establishment.
+    Registra un nuevo servicio o venta incluyendo ingresos y gastos.
     """
     establishment_id = token_data.get('uid')
 
     try:
+        # data.model_dump() ya incluirá expenses (0.0) e invoice_id (None) 
+        # aunque no vengan en el JSON original.
         new_record = CustomerHistory(
             **data.model_dump(), 
             establishment_id=establishment_id,
@@ -118,14 +120,25 @@ def add_service_record(
         db.commit()
         db.refresh(new_record)
         
-        register_action_log(db, establishment_id, "CREATE_SERVICE_RECORD", "POST", "/operations/history", data.model_dump())
+        # Auditoría mejorada con los datos dinámicos de la request
+        register_action_log(
+            db, 
+            establishment_id, 
+            "CREATE_SERVICE_RECORD", 
+            request.method, 
+            request.url.path, 
+            data.model_dump(),
+            request=request # Pasamos la request para capturar IP y logs
+        )
         
         return {"status": "success", "id": new_record.id}
 
     except Exception as e:
         db.rollback()
-        print(f"Error detected: {e}") 
-        raise HTTPException(status_code=500, detail=str(e))
+        # Usamos traceback para ver el error real en logs de Dokploy
+        import traceback
+        print(f"❌ Error en add_service_record: {traceback.format_exc()}") 
+        raise HTTPException(status_code=500, detail="INTERNAL_SERVER_ERROR_HISTORY")
     
 
 

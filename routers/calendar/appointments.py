@@ -471,5 +471,4 @@ def delete_appointment(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="DATABASE_ERROR_ON_DELETE"
-
         )

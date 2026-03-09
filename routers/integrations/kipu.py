@@ -3,12 +3,13 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, func
 from datetime import datetime, timezone, timedelta, time
 import pytz
+import httpx
 from typing import Optional, List
 import traceback
-
+import os
 from core.database import get_db
 from core.auth import verify_firebase_token
-from core.utils import register_action_log
+from core.utils import register_action_log, decrypt_value, register_action_log
 
 # Import English models
 from models import *
@@ -22,7 +23,10 @@ from schemas.operations import (
 from schemas.users import TagResponse
 from schemas.kipu import BillingProfileCreate
 
+KIPU_BASE_URL = os.getenv("KIPU_BASE_URL")
+
 router = APIRouter(dependencies=[Depends(verify_firebase_token)])
+
 
 def validate_ecuadorian_id(number: str) -> bool:
     if not number.isdigit() or len(number) != 10:
@@ -46,6 +50,19 @@ def validate_ecuadorian_id(number: str) -> bool:
     verificador = int(number[9])
     digito_esperado = (10 - (suma % 10)) % 10
     return verificador == digito_esperado
+
+# Función auxiliar para obtener y descifrar el token de un establecimiento
+async def get_kipu_token(db: Session, establishment_id: str):
+    token_record = db.query(EstablishmentToken).filter(
+        EstablishmentToken.establishment_id == establishment_id,
+        EstablishmentToken.provider == "kipu"
+    ).first()
+    
+    if not token_record:
+        raise HTTPException(status_code=404, detail="KIPU_INTEGRATION_NOT_FOUND")
+    
+    return decrypt_value(token_record.encrypted_token)
+
 
 @router.post("/billing-profiles", status_code=201)
 def create_billing_profile(
@@ -123,3 +140,76 @@ def create_billing_profile(
         import traceback
         print(f"🚨 ERROR: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="INTERNAL_SERVER_ERROR_BILLING")
+    
+
+@router.get("/status")
+async def get_kipu_status(
+    db: Session = Depends(get_db),
+    token_data: dict = Depends(verify_firebase_token)
+):
+    est_id = token_data.get('uid')
+    token = await get_kipu_token(db, est_id)
+
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            f"{KIPU_BASE_URL}/integrations/status",
+            headers={"x-api-key": token}
+        )
+    
+    return response.json()
+
+
+@router.post("/validate-point")
+async def validate_kipu_point(
+    data: dict, # Recibe {"estab_codigo": "...", "punto_codigo": "..."}
+    db: Session = Depends(get_db),
+    token_data: dict = Depends(verify_firebase_token)
+):
+    est_id = token_data.get('uid')
+    token = await get_kipu_token(db, est_id)
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{KIPU_BASE_URL}/integrations/validate",
+            headers={"x-api-key": token},
+            json=data
+        )
+    
+    return response.json()
+
+
+@router.post("/facturar")
+async def send_kipu_invoice(
+    payload: dict, # El JSON completo que mencionaste
+    request: Request,
+    db: Session = Depends(get_db),
+    token_data: dict = Depends(verify_firebase_token)
+):
+    est_id = token_data.get('uid')
+    token = await get_kipu_token(db, est_id)
+
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(
+                f"{KIPU_BASE_URL}/integrations/invoice",
+                headers={"x-api-key": token},
+                json=payload,
+                timeout=30.0 # Las APIs de facturación pueden ser lentas
+            )
+            
+            # Registramos el intento en la auditoría de Wappti
+            register_action_log(
+                db, 
+                establishment_id=est_id, 
+                action="KIPU_INVOICE_SENT", 
+                method=request.method, 
+                path=request.url.path, 
+                request=request,
+                status_code=response.status_code
+            )
+
+            return response.json()
+
+        except httpx.RequestError as exc:
+            print(f"An error occurred while requesting {exc.request.url!r}.")
+            raise HTTPException(status_code=503, detail="KIPU_SERVICE_UNAVAILABLE")

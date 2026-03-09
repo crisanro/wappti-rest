@@ -121,3 +121,8 @@ class CalendarNoteResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class TokenKeyPayload(BaseModel):
+    provider: str
+    token_value: str

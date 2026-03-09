@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, Boolean, DateTime, BigInteger, ForeignKey, Float, func, ARRAY
+from sqlalchemy import Column, String, Text, Boolean, DateTime, BigInteger, ForeignKey, Float, func, ARRAY, UniqueConstraint
 from sqlalchemy.orm import relationship
 from core.database import Base
 
@@ -83,6 +83,25 @@ class EstablishmentReview(Base):
     customer_name = Column(Text) # Agregado por SQL
 
     establishment = relationship("Establishment", back_populates="reviews")
+
+
+class EstablishmentToken(Base):
+    """Bóveda de tokens cifrados para integraciones externas"""
+    __tablename__ = "establishment_tokens"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    establishment_id = Column(String, ForeignKey("establishments.id", ondelete="CASCADE"), nullable=False)
+    provider = Column(String(50), nullable=False) # Identificador del servicio: 'kipu', 'stripe', etc.
+    encrypted_token = Column(Text, nullable=False)# Almacenará el resultado del cifrado AES/Fernet
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Configuración de unicidad e índices
+    __table_args__ = (
+        UniqueConstraint('establishment_id', 'provider', name='_est_provider_uc'),
+    )
+
+    def __repr__(self):
+        return f"<EstablishmentToken(establishment={self.establishment_id}, provider={self.provider})>"
 
 
 # Nueva Tabla: Para completar el bloque Core según tu SQL

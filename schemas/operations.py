@@ -47,6 +47,8 @@ class CustomerHistoryCreate(BaseModel):
     customer_id: int
     process_name: str = Field(..., example="Tinte completo")
     income: float = Field(default=0.0, ge=0)
+    expenses: float = Field(default=0.0, ge=0) 
+    invoice_id: Optional[str] = None
     profile_id: Optional[int] = None
     notes: Optional[str] = None
 
@@ -55,6 +57,8 @@ class CustomerHistoryResponse(BaseModel):
     profile_id: Optional[int]
     process_name: str
     income: float
+    expenses: float
+    invoice_id: Optional[str] = ""
     created_at: datetime # Lo enviaremos ya formateado como string
     notes: Optional[str] = ""
     class Config:

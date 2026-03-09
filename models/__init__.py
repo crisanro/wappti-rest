@@ -16,7 +16,8 @@ from .establishments import (
     EstablishmentCredit,
     EstablishmentReview,
     AppAccessPin,
-    WhatsAppAuthPin
+    WhatsAppAuthPin,
+    EstablishmentToken
 )
 
 from .finance import (
