@@ -16,7 +16,7 @@ services:
           memory: 1280M        # 1GB de RAM máximo
         reservations:
           cpus: '0.25'          # Reserva garantizada (piso)
-          memory: 1024M
+          memory: 512M
 
     restart: always
     networks:
@@ -26,4 +26,5 @@ networks:
   red_infraestructura:
 
     external: true
+
 
