@@ -8,7 +8,7 @@ from sqlalchemy import text, and_, or_
 from models import Appointment, Establishment, Customer
 from core.database import get_db
 from core.auth import verify_superadmin_key  # Tu función que valida el header X-Superadmin-Key
-from schemas.admin.appointment import AppointmentConfirmation, SingleUpdatePayload, WhatsAppStatusPayload
+from schemas.admin.appointment import AppointmentConfirmation, SingleUpdatePayload, WhatsAppStatusPayload, ComplaintPayload
 
 # 1. Configuración Global del Router
 # Al poner las dependencias aquí, PROTEGES TODAS las funciones de este archivo automáticamente.
