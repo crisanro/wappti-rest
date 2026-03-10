@@ -474,7 +474,6 @@ async def process_whatsapp_status(payload: WhatsAppStatusPayload, db: Session = 
 
 @router.patch("/complaints", status_code=status.HTTP_200_OK)
 def register_complaint(
-    appointment_id: int,
     payload: ComplaintPayload,
     db: Session = Depends(get_db)
 ):
