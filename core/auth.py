@@ -89,13 +89,10 @@ async def verify_superadmin_key(
 
     # LOG DE SEGURIDAD: Verás esto en la consola de tu servidor
     print(f"--- INTENTO DE ACCESO SUPERADMIN ---")
-    print(f"IP Detectada: {client_ip}")
 
     # 3. Cargar lista de IPs
     raw_ips = os.getenv("ALLOWED_SUPERADMIN_IPS", "")
     allowed_ips = [ip.strip() for ip in raw_ips.split(",") if ip.strip()]
-    
-    print(f"IPs Permitidas en .env: {allowed_ips}")
 
     # 4. VALIDACIÓN ESTRICTA
     if client_ip not in allowed_ips:
@@ -152,3 +149,4 @@ def verify_internal_key(x_wappti_key: str = Header(None)):
     
     # Si todo coincide, permitimos el paso
     return True
+
