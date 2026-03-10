@@ -470,3 +470,31 @@ async def process_whatsapp_status(payload: WhatsAppStatusPayload, db: Session = 
     except Exception as e:
         db.rollback()
         return {"case": "SYSTEM_ERROR", "sub_case": "EXCEPTION", "detail": str(e)}
+
+
+@router.patch("/complaints", status_code=status.HTTP_200_OK)
+def register_complaint(
+    appointment_id: int,
+    payload: ComplaintPayload,
+    db: Session = Depends(get_db)
+):
+    """Registra o actualiza la queja de un appointment."""
+
+    appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
+
+    if not appointment:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Appointment {appointment_id} no encontrado."
+        )
+
+    appointment.complaint = payload.complaint
+    db.commit()
+    db.refresh(appointment)
+
+    return {
+        "id": appointment.id,
+        "complaint": appointment.complaint,
+        "updated_at": datetime.now(timezone.utc).isoformat()
+    }
+
