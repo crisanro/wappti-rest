@@ -87,8 +87,6 @@ async def verify_superadmin_key(
                 request.headers.get("x-forwarded-for", "").split(",")[0].strip() or \
                 request.client.host
 
-    # LOG DE SEGURIDAD: Verás esto en la consola de tu servidor
-    print(f"--- INTENTO DE ACCESO SUPERADMIN ---")
 
     # 3. Cargar lista de IPs
     raw_ips = os.getenv("ALLOWED_SUPERADMIN_IPS", "")
@@ -102,7 +100,7 @@ async def verify_superadmin_key(
             detail=f"IP_NOT_AUTHORIZED: {client_ip}" # Mostramos la IP para que sepas cuál poner en el .env
         )
 
-    print(f"✅ ACCESO CONCEDIDO a IP: {client_ip}")
+    print(f"✅ ACCESO CONCEDIDO a SuperAdmin via IP: {client_ip}")
     return api_key
 
 
@@ -149,4 +147,5 @@ def verify_internal_key(x_wappti_key: str = Header(None)):
     
     # Si todo coincide, permitimos el paso
     return True
+
 
