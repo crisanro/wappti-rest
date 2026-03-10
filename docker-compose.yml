@@ -13,7 +13,7 @@ services:
       resources:
         limits:
           cpus: '0.80'          # Límite máximo (techo)
-          memory: 1024M        # 1GB de RAM máximo
+          memory: 1600M        # 1GB de RAM máximo
         reservations:
           cpus: '0.25'          # Reserva garantizada (piso)
           memory: 256M
@@ -24,4 +24,5 @@ services:
 
 networks:
   red_infraestructura:
+
     external: true
