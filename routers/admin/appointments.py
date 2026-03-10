@@ -479,12 +479,12 @@ def register_complaint(
 ):
     """Registra o actualiza la queja de un appointment."""
 
-    appointment = db.query(Appointment).filter(Appointment.id == appointment_id).first()
+    appointment = db.query(Appointment).filter(Appointment.id == payload.appointment_id).first()
 
     if not appointment:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Appointment {appointment_id} no encontrado."
+            detail=f"Appointment {payload.appointment_id} no encontrado."
         )
 
     appointment.complaint = payload.complaint
@@ -496,4 +496,3 @@ def register_complaint(
         "complaint": appointment.complaint,
         "updated_at": datetime.now(timezone.utc).isoformat()
     }
-
