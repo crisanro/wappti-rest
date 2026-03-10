@@ -24,3 +24,8 @@ class WhatsAppStatusPayload(BaseModel):
 
 class AppointmentReminderUpdate(BaseModel):
     whatsapp_id_reminder: str
+
+
+class ComplaintPayload(BaseModel):
+    appointment_id: int
+    complaint: str
