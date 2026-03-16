@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
 from sqlalchemy.orm import Session
 
 # Tus imports específicos
@@ -13,23 +13,21 @@ router = APIRouter()
 
 @router.get("/", response_model=list[dict])
 def list_my_tokens(
+    response: Response, # Añadimos esto
     db: Session = Depends(get_db),
     token_data: dict = Depends(verify_firebase_token)
 ):
-    """Lista los proveedores y sus IDs para el establecimiento"""
     establishment_id = token_data.get('uid')
     
     tokens = db.query(EstablishmentToken).filter(
         EstablishmentToken.establishment_id == establishment_id
     ).all()
     
-    # IMPORTANTE: Devolvemos el ID para que el front lo use en el DELETE
+    # Enviamos el conteo en un header personalizado
+    response.headers["X-Total-Count"] = str(len(tokens))
+    
     return [
-        {
-            "id": t.id, 
-            "provider": t.provider, 
-            "created_at": t.created_at
-        } 
+        {"id": t.id, "provider": t.provider, "created_at": t.created_at} 
         for t in tokens
     ]
 
