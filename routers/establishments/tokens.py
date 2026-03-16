@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 
 # Tus imports específicos
@@ -11,9 +11,8 @@ from core.utils import encrypt_value # Asumiendo que ahí pondrás la lógica de
 
 router = APIRouter()
 
-@router.get("/", response_model=list[dict])
+@router.get("/") # Quitamos el response_model de lista para que sea flexible
 def list_my_tokens(
-    response: Response, # Añadimos esto
     db: Session = Depends(get_db),
     token_data: dict = Depends(verify_firebase_token)
 ):
@@ -23,13 +22,17 @@ def list_my_tokens(
         EstablishmentToken.establishment_id == establishment_id
     ).all()
     
-    # Enviamos el conteo en un header personalizado
-    response.headers["X-Total-Count"] = str(len(tokens))
-    
-    return [
-        {"id": t.id, "provider": t.provider, "created_at": t.created_at} 
-        for t in tokens
-    ]
+    return {
+        "total": len(tokens),
+        "tokens": [
+            {
+                "id": t.id, 
+                "provider": t.provider, 
+                "created_at": t.created_at
+            } 
+            for t in tokens
+        ]
+    }
 
 @router.post("/")
 async def save_secure_token(
