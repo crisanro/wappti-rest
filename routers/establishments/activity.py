@@ -39,15 +39,14 @@ def get_recent_stats(
     db: Session = Depends(get_db),
     token_data: dict = Depends(verify_firebase_token)
 ):
-    """
-    Estadísticas actualizadas:
-    - total_messages_sent: Citas que tienen un whatsapp_id (sin importar el status).
-    - total_attended_appointments: Citas del grupo anterior que tienen status 'Attended'.
-    """
+
     establishment_id = token_data.get('uid')
 
+    if not establishment_id:
+        raise HTTPException(status_code=401, detail="Invalid token: UID missing")
+
     try:
-        # 1. Configurar rango de tiempo (UTC)
+        # 1. Configuración de tiempo
         try:
             local_tz = pytz.timezone(tz_name)
         except:
@@ -57,40 +56,40 @@ def get_recent_stats(
         seven_days_ago_local = (now_local - timedelta(days=7)).replace(hour=0, minute=0, second=0)
         start_utc = seven_days_ago_local.astimezone(pytz.UTC)
 
-        # 2. Obtener todas las citas con whatsapp_id (Mensajes enviados)
-        # Filtramos por establecimiento, fecha y que whatsapp_id NO sea nulo
-        appointments_with_whatsapp = db.query(Appointment).filter(
+        # 2. Consulta Base: Solo registros que pertenecen al establecimiento Y tienen whatsapp_id
+        # Esto garantiza que no procesamos información ajena
+        base_query = db.query(Appointment).filter(
             and_(
-                Appointment.establishment_id == establishment_id,
+                Appointment.establishment_id == establishment_id, # <--- CANDADO DE SEGURIDAD
                 Appointment.appointment_date >= start_utc,
-                Appointment.whatsapp_id != None  # IMPORTANTE: Que tenga ID de WhatsApp
+                Appointment.whatsapp_id.isnot(None) # Solo los que tienen ID de mensaje
             )
         ).all()
 
-        messages_sent = len(appointments_with_whatsapp)
-
-        # 3. De esos mensajes enviados, filtrar los que fueron atendidos
-        # Usamos una lista de comprensión sobre el resultado anterior
-        attended_from_messages = [a for a in appointments_with_whatsapp if a.response_text == 'Attended']
+        # 3. Cálculo de métricas sobre el set seguro de datos
+        messages_sent = len(base_query)
+        
+        # Filtramos de los mensajes enviados, cuáles fueron atendidos
+        attended_from_messages = [a for a in base_query if a.response_text == 'Attended']
         total_attended = len(attended_from_messages)
 
-        # 4. Calcular porcentaje de conversión/asistencia
-        # ¿Qué porcentaje de los mensajes enviados terminaron en una cita asistida?
+        # 4. Porcentaje de efectividad
         coverage_rate = (total_attended / messages_sent * 100) if messages_sent > 0 else 0
 
         return {
             "period_days": 7,
             "total_messages_sent": messages_sent,
             "total_attended_appointments": total_attended,
-            "coverage_percentage": round(coverage_rate, 2),
-            "label": "Métricas de conversión de mensajes (Últimos 7 días)"
+            "conversion_rate": round(coverage_rate, 2),
+            "owner_id": establishment_id, # Confirmación opcional para el front
+            "label": "Efectividad de Mensajería (7 días)"
         }
 
     except Exception as e:
         import traceback
-        print(f"🚨 ERROR EN STATS: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail="error_fetching_recent_stats")
-    
+        print(f"🚨 ERROR CRÍTICO EN STATS: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail="error_processing_stats")
+        
 
 @router.get("/pin")
 def verify_access_pin(
