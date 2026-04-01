@@ -40,50 +40,50 @@ def get_recent_stats(
     token_data: dict = Depends(verify_firebase_token)
 ):
     """
-    Estadísticas de los últimos 7 días:
-    - Citas con status 'Attended'
-    - Cuántas de esas tienen whatsapp_id (mensajes enviados)
+    Estadísticas actualizadas:
+    - total_messages_sent: Citas que tienen un whatsapp_id (sin importar el status).
+    - total_attended_appointments: Citas del grupo anterior que tienen status 'Attended'.
     """
     establishment_id = token_data.get('uid')
 
     try:
-        # 1. Configurar rango de tiempo (7 días atrás desde hoy)
+        # 1. Configurar rango de tiempo (UTC)
         try:
             local_tz = pytz.timezone(tz_name)
         except:
             local_tz = pytz.UTC
 
         now_local = datetime.now(local_tz)
-        # Siete días atrás desde el inicio de hoy
         seven_days_ago_local = (now_local - timedelta(days=7)).replace(hour=0, minute=0, second=0)
-        
-        # Convertir a UTC para la base de datos
         start_utc = seven_days_ago_local.astimezone(pytz.UTC)
 
-        # 2. Consulta de Citas Atendidas
-        # Filtramos por establecimiento, fecha y que el texto de respuesta sea exactamente 'Attended'
-        attended_appointments = db.query(Appointment).filter(
+        # 2. Obtener todas las citas con whatsapp_id (Mensajes enviados)
+        # Filtramos por establecimiento, fecha y que whatsapp_id NO sea nulo
+        appointments_with_whatsapp = db.query(Appointment).filter(
             and_(
                 Appointment.establishment_id == establishment_id,
                 Appointment.appointment_date >= start_utc,
-                Appointment.response_text == 'Attended'
+                Appointment.whatsapp_id != None  # IMPORTANTE: Que tenga ID de WhatsApp
             )
         ).all()
 
-        total_attended = len(attended_appointments)
-        
-        # 3. Contar cuántas tienen whatsapp_id (Mensajes automáticos enviados)
-        messages_sent = len([a for a in attended_appointments if a.whatsapp_id is not None])
+        messages_sent = len(appointments_with_whatsapp)
 
-        # 4. Calcular un porcentaje de cobertura (opcional, para que se vea pro en la UI)
-        coverage_rate = (messages_sent / total_attended * 100) if total_attended > 0 else 0
+        # 3. De esos mensajes enviados, filtrar los que fueron atendidos
+        # Usamos una lista de comprensión sobre el resultado anterior
+        attended_from_messages = [a for a in appointments_with_whatsapp if a.response_text == 'Attended']
+        total_attended = len(attended_from_messages)
+
+        # 4. Calcular porcentaje de conversión/asistencia
+        # ¿Qué porcentaje de los mensajes enviados terminaron en una cita asistida?
+        coverage_rate = (total_attended / messages_sent * 100) if messages_sent > 0 else 0
 
         return {
             "period_days": 7,
-            "total_attended_appointments": total_attended,
             "total_messages_sent": messages_sent,
+            "total_attended_appointments": total_attended,
             "coverage_percentage": round(coverage_rate, 2),
-            "label": "Métricas de fidelización (Últimos 7 días)"
+            "label": "Métricas de conversión de mensajes (Últimos 7 días)"
         }
 
     except Exception as e:
