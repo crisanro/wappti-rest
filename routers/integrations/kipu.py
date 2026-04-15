@@ -152,7 +152,7 @@ async def get_kipu_status(
 
     async with httpx.AsyncClient() as client:
         response = await client.get(
-            f"{KIPU_BASE_URL}/integrations/status",
+            f"{KIPU_BASE_URL}/public/integraciones/status",
             headers={"x-api-key": token}
         )
     
@@ -170,7 +170,7 @@ async def validate_kipu_point(
 
     async with httpx.AsyncClient() as client:
         response = await client.post(
-            f"{KIPU_BASE_URL}/integrations/validate",
+            f"{KIPU_BASE_URL}/public/integraciones/validate",
             headers={"x-api-key": token},
             json=data
         )
@@ -191,7 +191,7 @@ async def send_kipu_invoice(
     async with httpx.AsyncClient() as client:
         try:
             response = await client.post(
-                f"{KIPU_BASE_URL}/integrations/invoice",
+                f"{KIPU_BASE_URL}/public/integraciones/invoice",
                 headers={"x-api-key": token},
                 json=payload,
                 timeout=30.0 # Las APIs de facturación pueden ser lentas
