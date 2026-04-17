@@ -1,13 +1,13 @@
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-import os
+from .config import settings
 from dotenv import load_dotenv
 
 load_dotenv()
 
 # Obtenemos la URL de la base de datos
-SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL")
+SQLALCHEMY_DATABASE_URL = settings.DATABASE_URL
 
 # --- CONFIGURACIÓN DEL ENGINE CON POOLING ---
 # Optimizamos para un servidor de 8GB compartido y 0.5 vCPU

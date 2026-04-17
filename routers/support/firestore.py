@@ -1,4 +1,4 @@
-import os
+from core.config import settings
 import httpx
 import random
 import pytz
@@ -32,12 +32,12 @@ import traceback
 
 # --- CONFIGURACIÓN ---
 # Esta es la URL exclusiva para tus notificaciones y logs de seguimiento
-WEBHOOK_URL_NOTIFICATIONS = os.getenv("WEBHOOK_URL_NOTIFICATIONS")
+WEBHOOK_URL_NOTIFICATIONS = settings.WEBHOOK_URL_NOTIFICATIONS
 
 load_dotenv()
 
 async def fire_security_webhook(event_type: str, user_id: str, details: dict, request: Request):
-    webhook_url = os.getenv("SECURITY_WEBHOOK_URL")
+    webhook_url = settings.SECURITY_WEBHOOK_URL
     if not webhook_url:
         return
 
@@ -74,9 +74,9 @@ def update_user_reminders(user_id: str, amount: int):
 
 def get_firestore_client():
     # 1. Extraer las variables del .env
-    project_id = os.getenv("FIREBASE_PROJECT_ID")
-    private_key = os.getenv("FIREBASE_PRIVATE_KEY")
-    client_email = os.getenv("FIREBASE_CLIENT_EMAIL")
+    project_id = settings.FIREBASE_PROJECT_ID
+    private_key = settings.FIREBASE_PRIVATE_KEY
+    client_email = settings.FIREBASE_CLIENT_EMAIL
     # private_key_id no es estrictamente necesario para la conexión, 
     # pero Google lo acepta si lo quieres incluir.
 

@@ -25,7 +25,7 @@ class Customer(Base):
     notes = Column(Text)
     tag_ids = Column(ARRAY(Integer), default=[])
     language = Column(Text)
-
+    billing_profile_uids = Column(ARRAY(Text), default=[])
     # Relaciones
     establishment = relationship("Establishment", back_populates="customers")
     appointments = relationship("Appointment", back_populates="customer", cascade="all, delete-orphan")

@@ -1,4 +1,4 @@
-import os
+from .config import settings
 from cryptography.fernet import Fernet
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -9,7 +9,7 @@ from datetime import datetime, timezone, timedelta
 from models import SystemAudit, Establishment, SystemBlockedIP 
 
 # --- CONFIGURACIÓN DE CIFRADO ---
-SYSTEM_KEY = os.getenv("SYSTEM_KEY")
+SYSTEM_KEY = settings.SYSTEM_KEY
 
 if not SYSTEM_KEY:
     # Evita que el sistema arranque sin la llave de seguridad

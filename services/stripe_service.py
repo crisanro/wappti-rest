@@ -1,7 +1,7 @@
 import stripe
-import os
+from core.config import settings
 
-stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+stripe.api_key = settings.STRIPE_SECRET_KEY
 
 class StripeService:
     @staticmethod

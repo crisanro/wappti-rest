@@ -189,7 +189,7 @@ def get_customer_detail(
         except Exception:
             local_tz = pytz.UTC
 
-        # 2. Buscar al cliente (Validando pertenencia al establecimiento)
+        # 2. Buscar al cliente
         customer = db.query(Customer).filter(
             Customer.id == customer_id,
             Customer.establishment_id == establishment_id
@@ -207,20 +207,14 @@ def get_customer_detail(
             )
         ).order_by(Appointment.appointment_date.asc()).first()
 
-        # 4. BUSCAR PERFILES DE FACTURACIÓN (Nueva sección)
-        billing_db = db.query(CustomerBillingProfile).filter(
-            CustomerBillingProfile.customer_id == customer_id,
-            CustomerBillingProfile.establishment_id == establishment_id
-        ).all()
-
-        # 5. Función para formatear fechas
+        # 4. Función para formatear fechas
         def format_local(dt):
             if not dt: return None
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
             return dt.astimezone(local_tz).isoformat()
 
-        # 6. Respuesta Final Combinada
+        # 5. Respuesta Final
         return {
             "id": customer.id,
             "first_name": customer.first_name,
@@ -238,24 +232,15 @@ def get_customer_detail(
             "next_appointment_date": format_local(next_appo.appointment_date) if next_appo else None,
             "next_appointment_reason": next_appo.reason if next_appo else None,
             "has_next_appointment": next_appo is not None,
-            "language":customer.language,
-            
-            # LISTA DE PERFILES DE FACTURACIÓN
-            "billing_profiles": [
-                {
-                    "id": b.id,
-                    "tax_id_type": b.tax_id_type,
-                    "tax_id_number": b.tax_id_number,
-                    "business_name": b.business_name
-                } for b in billing_db
-            ]
+            "language": customer.language,
+            "billing_profile_uids": customer.billing_profile_uids if customer.billing_profile_uids else []
         }
 
     except Exception as e:
         import traceback
         print(f"🚨 ERROR EN DETALLE CLIENTE: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="customer_detail_error")
-
+    
 
 @router.get("/activity/{customer_id}")
 def get_customer_activity_summary(

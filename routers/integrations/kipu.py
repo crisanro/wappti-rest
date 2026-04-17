@@ -3,10 +3,11 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, func
 from datetime import datetime, timezone, timedelta, time
 import pytz
+import json
 import httpx
 from typing import Optional, List
 import traceback
-import os
+from core.config import settings
 from core.database import get_db
 from core.auth import verify_firebase_token
 from core.utils import register_action_log, decrypt_value, register_action_log
@@ -23,7 +24,7 @@ from schemas.operations import (
 from schemas.users import TagResponse
 from schemas.kipu import BillingProfileCreate
 
-KIPU_BASE_URL = os.getenv("KIPU_BASE_URL")
+KIPU_BASE_URL = settings.KIPU_BASE_URL
 
 router = APIRouter(dependencies=[Depends(verify_firebase_token)])
 
@@ -64,84 +65,6 @@ async def get_kipu_token(db: Session, establishment_id: str):
     return decrypt_value(token_record.encrypted_token)
 
 
-@router.post("/billing-profiles", status_code=201)
-def create_billing_profile(
-    data: BillingProfileCreate, 
-    db: Session = Depends(get_db),
-    token_data: dict = Depends(verify_firebase_token) 
-):
-    try:
-        establishment_id = token_data.get('uid')
-        id_num = data.tax_id_number.strip()
-        
-        # 1. Mapeo de códigos CORREGIDO (4: RUC, 5: Cédula, 6: Pasaporte, 8: Exterior)
-        # Según estándar SRI Ecuador
-        type_mapping = {"RUC": "04", "Cédula": "05", "Pasaporte": "06", "Exterior": "08"}
-        tax_code = type_mapping.get(data.tax_id_type)
-        
-        if not tax_code:
-            raise HTTPException(status_code=400, detail="INVALID_TAX_ID_TYPE")
-
-        # 2. VALIDACIÓN DE DUPLICADOS POR CLIENTE
-        already_exists = db.query(CustomerBillingProfile).filter(
-            CustomerBillingProfile.tax_id_number == id_num,
-            CustomerBillingProfile.customer_id == data.customer_id
-        ).first()
-
-        if already_exists:
-            raise HTTPException(
-                status_code=400, 
-                detail="TAX_ID_ALREADY_EXISTS_FOR_THIS_CUSTOMER"
-            )
-
-        # 3. SEGURIDAD: Validar que el cliente pertenece al establecimiento
-        customer_exists = db.query(Customer).filter(
-            Customer.id == data.customer_id,
-            Customer.establishment_id == establishment_id
-        ).first()
-
-        if not customer_exists:
-            raise HTTPException(status_code=403, detail="CUSTOMER_NOT_OWNED")
-
-        # 4. VALIDACIONES DE ALGORITMO (Ecuador)
-        # Código 05 es Cédula
-        if tax_code == "05":
-            if not validate_ecuadorian_id(id_num):
-                raise HTTPException(status_code=400, detail="INVALID_CEDULA_DIGIT_VERIFIER")
-        
-        # Código 04 es RUC
-        elif tax_code == "04":
-            if len(id_num) != 13 or not id_num.endswith("001"):
-                raise HTTPException(status_code=400, detail="INVALID_RUC_FORMAT")
-            # Validación para RUC de personas naturales (tercer dígito menor a 6)
-            if int(id_num[2]) < 6 and not validate_ecuadorian_id(id_num[0:10]):
-                raise HTTPException(status_code=400, detail="INVALID_RUC_NATURAL_PERSON")
-
-        # 5. GUARDADO
-        new_profile = CustomerBillingProfile(
-            customer_id=data.customer_id,
-            establishment_id=establishment_id,
-            tax_id_type=tax_code,
-            tax_id_number=id_num,
-            business_name=data.business_name.upper()
-        )
-
-        db.add(new_profile)
-        db.commit()
-        db.refresh(new_profile)
-
-        return {"status": "success", "id": new_profile.id}
-
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        db.rollback()
-        # Asegúrate de importar traceback si vas a usarlo
-        import traceback
-        print(f"🚨 ERROR: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail="INTERNAL_SERVER_ERROR_BILLING")
-    
-
 @router.get("/status")
 async def get_kipu_status(
     db: Session = Depends(get_db),
@@ -151,13 +74,29 @@ async def get_kipu_status(
     token = await get_kipu_token(db, est_id)
 
     async with httpx.AsyncClient() as client:
-        response = await client.get(
-            f"{KIPU_BASE_URL}/public/integraciones/status",
-            headers={"x-api-key": token}
-        )
-    
-    return response.json()
+        try:
+            response = await client.get(
+                f"{KIPU_BASE_URL}/api/v1/public/integraciones/status",
+                headers={"x-api-key": token},
+                timeout=10.0
+            )
+            
+            # Si Kipu da 500, esto lanzará una excepción controlada
+            response.raise_for_status() 
+            
+            return response.json()
 
+        except httpx.HTTPStatusError as e:
+            # Capturamos el error 500 de Kipu aquí
+            print(f"❌ Kipu devolvió error {e.response.status_code}: {e.response.text}")
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY, 
+                detail="Kipu integration is currently unavailable (500)"
+            )
+        except Exception as e:
+            # Cualquier otro error (timeout, red, etc)
+            raise HTTPException(status_code=500, detail="Unexpected integration error")
+        
 
 @router.post("/validate-point")
 async def validate_kipu_point(
@@ -170,7 +109,7 @@ async def validate_kipu_point(
 
     async with httpx.AsyncClient() as client:
         response = await client.post(
-            f"{KIPU_BASE_URL}/public/integraciones/validate",
+            f"{KIPU_BASE_URL}/api/v1/public/integraciones/validate",
             headers={"x-api-key": token},
             json=data
         )
@@ -191,7 +130,7 @@ async def send_kipu_invoice(
     async with httpx.AsyncClient() as client:
         try:
             response = await client.post(
-                f"{KIPU_BASE_URL}/public/integraciones/invoice",
+                f"{KIPU_BASE_URL}/api/v1/public/integraciones/invoice",
                 headers={"x-api-key": token},
                 json=payload,
                 timeout=30.0 # Las APIs de facturación pueden ser lentas
@@ -213,3 +152,157 @@ async def send_kipu_invoice(
         except httpx.RequestError as exc:
             print(f"An error occurred while requesting {exc.request.url!r}.")
             raise HTTPException(status_code=503, detail="KIPU_SERVICE_UNAVAILABLE")
+
+
+@router.post("/clientes/buscar")
+async def search_kipu_clients(
+    data: dict, # Recibe {"terminos": ["uid1", "uid2"]}
+    db: Session = Depends(get_db),
+    token_data: dict = Depends(verify_firebase_token)
+):
+    est_id = token_data.get('uid')
+    token = await get_kipu_token(db, est_id)
+
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(
+                f"{KIPU_BASE_URL}/api/v1/public/clientes/buscar",
+                headers={"x-api-key": token},
+                json=data,
+                timeout=15.0
+            )
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPStatusError as e:
+            print(f"❌ Error en búsqueda: {e.response.text}")
+            raise HTTPException(status_code=e.response.status_code, detail="CLIENT_SEARCH_ERROR")
+
+@router.post("/clientes/crear")
+async def create_kipu_client(
+    payload: dict, # Datos: tipo_identificacion_sri, identificacion, razon_social, etc.
+    db: Session = Depends(get_db),
+    token_data: dict = Depends(verify_firebase_token)
+):
+    est_id = token_data.get('uid')
+    token = await get_kipu_token(db, est_id)
+
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(
+                f"{KIPU_BASE_URL}/api/v1/public/clientes/",
+                headers={"x-api-key": token},
+                json=payload,
+                timeout=15.0
+            )
+            
+            # Si Kipu devuelve 400 es probable que el cliente ya exista
+            if response.status_code == 400:
+                return response.json() # Devolvemos el error de Kipu directamente
+                
+            response.raise_for_status()
+            return response.json()
+            
+        except httpx.HTTPStatusError as e:
+            print(f"❌ Error al crear cliente: {e.response.text}")
+            raise HTTPException(status_code=e.response.status_code, detail="CLIENT_CREATION_FAILED")
+        
+        
+@router.get("/clientes/validar/{cliente_uid}")
+async def validate_kipu_client(
+    cliente_uid: str,
+    db: Session = Depends(get_db),
+    token_data: dict = Depends(verify_firebase_token)
+):
+    est_id = token_data.get('uid')
+    token = await get_kipu_token(db, est_id)
+
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(
+                f"{KIPU_BASE_URL}/api/v1/public/clientes/validar-cliente/{cliente_uid}",
+                headers={"x-api-key": token},
+                timeout=10.0
+            )
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(status_code=e.response.status_code, detail="CLIENT_VALIDATION_ERROR")
+        
+
+@router.post("/{customer_id}/billing-profiles/add")
+async def add_customer_billing_uid(
+    customer_id: int,
+    uid: str, 
+    db: Session = Depends(get_db),
+    token_data: dict = Depends(verify_firebase_token)
+):
+    establishment_id = token_data.get('uid')
+    
+    # 1. LIMPIEZA: Quitamos espacios, comas o saltos de línea accidentales
+    clean_uid = uid.strip().replace(",", "") 
+
+    customer = db.query(Customer).filter(
+        Customer.id == customer_id,
+        Customer.establishment_id == establishment_id
+    ).first()
+
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    try:
+        # Aseguramos que la lista exista
+        if customer.billing_profile_uids is None:
+            customer.billing_profile_uids = []
+        
+        # 2. VALIDACIÓN: Ahora sí comparamos el ID limpio
+        if clean_uid not in customer.billing_profile_uids:
+            # Usamos list() para que SQLAlchemy detecte el cambio de estado (mutable array)
+            current_uids = list(customer.billing_profile_uids)
+            current_uids.append(clean_uid)
+            customer.billing_profile_uids = current_uids
+            
+            db.commit()
+            db.refresh(customer)
+        
+        return {
+            "status": "success",
+            "current_uids": customer.billing_profile_uids
+        }
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))    
+
+@router.delete("/{customer_id}/billing-profiles/{uid_to_remove}")
+async def remove_customer_billing_uid(
+    customer_id: int,
+    uid_to_remove: str,
+    db: Session = Depends(get_db),
+    token_data: dict = Depends(verify_firebase_token)
+):
+    establishment_id = token_data.get('uid')
+    
+    customer = db.query(Customer).filter(
+        Customer.id == customer_id,
+        Customer.establishment_id == establishment_id
+    ).first()
+
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    try:
+        if customer.billing_profile_uids and uid_to_remove in customer.billing_profile_uids:
+            # Filtramos la lista para remover el UID
+            current_uids = [u for u in customer.billing_profile_uids if u != uid_to_remove]
+            customer.billing_profile_uids = current_uids
+            
+            db.commit()
+            db.refresh(customer)
+            
+        return {
+            "status": "success",
+            "message": "Perfil desvinculado correctamente",
+            "current_uids": customer.billing_profile_uids
+        }
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))

@@ -1,4 +1,4 @@
-import os
+from .config import settings
 import firebase_admin
 from firebase_admin import credentials, auth
 from fastapi import HTTPException, Depends, status, Security, Request, Header
@@ -10,10 +10,10 @@ load_dotenv()
 # --- FIREBASE CONFIGURATION ---
 firebase_config = {
     "type": "service_account",
-    "project_id": os.getenv("FIREBASE_PROJECT_ID"),
-    "private_key_id": os.getenv("FIREBASE_PRIVATE_KEY_ID"),
-    "private_key": os.getenv("FIREBASE_PRIVATE_KEY").replace('\\n', '\n') if os.getenv("FIREBASE_PRIVATE_KEY") else None,
-    "client_email": os.getenv("FIREBASE_CLIENT_EMAIL"),
+    "project_id": settings.FIREBASE_PROJECT_ID,
+    "private_key_id": settings.FIREBASE_PRIVATE_KEY_ID,
+    "private_key": settings.FIREBASE_PRIVATE_KEY.replace('\\n', '\n') if settings.FIREBASE_PRIVATE_KEY else None,
+    "client_email": settings.FIREBASE_CLIENT_EMAIL,
     "token_uri": "https://oauth2.googleapis.com/token",
 }
 
@@ -57,7 +57,7 @@ def verify_firebase_token(auth_cred: HTTPAuthorizationCredentials = Depends(secu
 # B. Para Admin / n8n (Usa ADMIN_API_KEY)
 def verify_admin_key(api_key: str = Security(admin_key_header)):
     """Validates the standard Admin API key."""
-    master_key = os.getenv("ADMIN_API_KEY")
+    master_key = settings.ADMIN_API_KEY
     if not master_key or api_key != master_key:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -66,15 +66,12 @@ def verify_admin_key(api_key: str = Security(admin_key_header)):
     return api_key
 
 # C. Para Superadmin / Rutas de Batch (Usa SUPERADMIN_API_KEY)
-# Define tus IPs permitidas en el .env (separadas por comas) o aquí mismo
-# Ejemplo en .env: ALLOWED_ADMIN_IPS=1.2.3.4,5.6.7.8
-
 async def verify_superadmin_key(
     request: Request, 
     api_key: str = Security(superadmin_key_header)
 ):
     # 1. Validar la API Key
-    secret = os.getenv("SUPERADMIN_API_KEY")
+    secret = settings.SUPERADMIN_API_KEY
     if not secret or api_key != secret:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -82,22 +79,19 @@ async def verify_superadmin_key(
         )
 
     # 2. Obtener la IP Real (Prioridad absoluta a Cloudflare)
-    # Cloudflare usa 'cf-connecting-ip' en minúsculas usualmente en el header
     client_ip = request.headers.get("cf-connecting-ip") or \
                 request.headers.get("x-forwarded-for", "").split(",")[0].strip() or \
                 request.client.host
 
-
-    # 3. Cargar lista de IPs
-    raw_ips = os.getenv("ALLOWED_SUPERADMIN_IPS", "")
-    allowed_ips = [ip.strip() for ip in raw_ips.split(",") if ip.strip()]
+    # 3. Cargar lista de IPs (¡Pydantic ya la convirtió en lista por nosotros!)
+    allowed_ips = settings.ALLOWED_SUPERADMIN_IPS
 
     # 4. VALIDACIÓN ESTRICTA
     if client_ip not in allowed_ips:
         print(f"❌ BLOQUEADO: La IP {client_ip} no coincide con ninguna permitida.")
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"IP_NOT_AUTHORIZED: {client_ip}" # Mostramos la IP para que sepas cuál poner en el .env
+            detail=f"IP_NOT_AUTHORIZED: {client_ip}" 
         )
 
     print(f"✅ ACCESO CONCEDIDO a SuperAdmin via IP: {client_ip}")
@@ -108,11 +102,9 @@ async def verify_superadmin_key(
 def verify_app_admin(token_data: dict = Depends(verify_firebase_token)):
     """
     Verifica que el usuario logueado en la App sea un Administrador autorizado.
-    Depende de verify_firebase_token, así que primero valida que el JWT sea real.
     """
-    # 1. Obtener la lista de UIDs permitidos desde el .env
-    raw_uids = os.getenv("ALLOWED_ADMIN_UIDS", "")
-    allowed_uids = [uid.strip() for uid in raw_uids.split(",") if uid.strip()]
+    # 1. Obtener la lista de UIDs permitidos (¡Pydantic ya la convirtió en lista!)
+    allowed_uids = settings.ALLOWED_ADMIN_UIDS
 
     # 2. Extraer el UID del token decodificado
     user_uid = token_data.get("uid")
@@ -131,13 +123,10 @@ def verify_app_admin(token_data: dict = Depends(verify_firebase_token)):
 
 def verify_internal_key(x_wappti_key: str = Header(None)):
     """
-    Valida que la petición incluya la llave secreta inyectada por el Proxy (Nginx).
-    Si alguien intenta entrar directo a la API sin pasar por la web, será bloqueado.
+    Valida que la petición incluya la llave secreta inyectada por el Proxy.
     """
-    # Obtenemos la llave de tu archivo .env
-    master_key = os.getenv("INTERNAL_WAPPTI_KEY")
+    master_key = settings.INTERNAL_WAPPTI_KEY
 
-    # Si no hay llave en el .env (error de config) o no coincide con el header
     if not master_key or x_wappti_key != master_key:
         print(f"❌ Intento de acceso no autorizado. Header recibido: {x_wappti_key}")
         raise HTTPException(
@@ -145,7 +134,4 @@ def verify_internal_key(x_wappti_key: str = Header(None)):
             detail="Acceso denegado: Petición no autorizada por el Proxy oficial."
         )
     
-    # Si todo coincide, permitimos el paso
     return True
-
-

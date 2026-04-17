@@ -1,12 +1,12 @@
-import os
+from core.config import settings
 import httpx
 from typing import Dict, Any
 
 class WhatsAppService:
     def __init__(self):
-        self.token = os.getenv("WHATSAPP_TOKEN")
-        self.phone_id = os.getenv("WHATSAPP_PHONE_ID")
-        self.version = os.getenv("WHATSAPP_VERSION", "v22.0")
+        self.token = settings.WHATSAPP_TOKEN
+        self.phone_id = settings.WHATSAPP_PHONE_ID
+        self.version = settings.WHATSAPP_VERSION
         self.base_url = f"https://graph.facebook.com/{self.version}/{self.phone_id}/messages"
         self.headers = {
             "Authorization": f"Bearer {self.token}",

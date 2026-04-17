@@ -24,13 +24,15 @@ class ReferralWithdrawal(Base):
     id = Column(BigInteger, primary_key=True, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     establishment_id = Column(String, index=True)
-    
+    payout_method_id = Column(BigInteger, ForeignKey("referral_payout_methods.id"))
     amount = Column(Float)
     status = Column(Text)
     associated_payment_id = Column(BigInteger, nullable=True)
     payment_date = Column(DateTime(timezone=True))
     platform = Column(Text)
     account = Column(Text)
+
+    payout_method = relationship("ReferralPayoutMethod", back_populates="withdrawals")
 
 class ReferralCode(Base):
     """Códigos de invitación"""
@@ -62,3 +64,4 @@ class ReferralPayoutMethod(Base):
     establishment_id = Column(String, ForeignKey("establishments.id", ondelete="CASCADE"), index=True)
     platform = Column(Text)         # Ej: "Zelle", "Paypal", "Banco"
     account_details = Column(Text)  # El correo, número o cuenta
+    withdrawals = relationship("ReferralWithdrawal", back_populates="payout_method")

@@ -1,5 +1,6 @@
 import stripe
-import os
+from core.config import settings
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from models import Payment, Establishment, UsageAuditLog
@@ -7,7 +8,7 @@ from core.database import get_db
 from core.auth import verify_app_admin
 
 # Configura tu llave secreta de Stripe (debería estar en tu .env)
-stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+stripe.api_key = settings.STRIPE_SECRET_KEY
 
 router = APIRouter(prefix="/admin/payments", tags=["Admin Payments"])
 

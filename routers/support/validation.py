@@ -1,4 +1,4 @@
-import os
+from core.config import settings
 import httpx
 import random
 import traceback
@@ -16,7 +16,7 @@ from schemas.validation import PinRequestSchema
 
 # --- CONFIGURACIÓN ---
 # Asegúrate de que esta variable esté en tu .env o entorno de Docker
-WEBHOOK_URL_AUTH_PIN = os.getenv("WEBHOOK_WHATSAPP_AUTH_PIN")
+WEBHOOK_URL_AUTH_PIN = settings.WEBHOOK_WHATSAPP_AUTH_PIN
 
 router = APIRouter()
 

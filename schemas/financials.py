@@ -11,11 +11,6 @@ class PaymentCreate(BaseModel):
     description: Optional[str] = None
     stripe_payment_intent_id: str
 
-class StripeCheckoutSchema(BaseModel):
-    """Esquema para iniciar sesión de checkout (Faltaba en tu código)"""
-    price_id: str
-    success_url: str
-    cancel_url: str
 
 class PaymentResponse(BaseModel):
     id: int
@@ -83,3 +78,7 @@ class PaymentCreate(BaseModel):
     amount: float
     payment_method: str # Ej: "Efectivo", "Transferencia"
     notes: Optional[str] = None
+
+
+class StripeCheckoutRequest(BaseModel):
+    price_id: str
