@@ -233,7 +233,8 @@ def get_customer_detail(
             "next_appointment_reason": next_appo.reason if next_appo else None,
             "has_next_appointment": next_appo is not None,
             "language": customer.language,
-            "billing_profile_uids": customer.billing_profile_uids if customer.billing_profile_uids else []
+            "billing_profile_uids": customer.billing_profile_uids if customer.billing_profile_uids else [],
+            "billing_profiles": []
         }
 
     except Exception as e:
