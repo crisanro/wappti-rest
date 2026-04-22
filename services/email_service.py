@@ -3,9 +3,11 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
+from email.message import EmailMessage
 from fpdf import FPDF
 from datetime import datetime
 from core.config import settings
+from firebase_admin import auth
 
 def generate_invoice_pdf(invoice_data: dict) -> bytes:
     """Genera un PDF válido para EEUU basado en el ejemplo de WAPPTI APP"""
@@ -94,3 +96,82 @@ def send_invoice_email(to_email: str, invoice_pdf_bytes: bytes, invoice_number: 
     except Exception as e:
         print(f"Error enviando correo SMTP: {e}")
         return False
+    
+def send_html_email(to_email: str, subject: str, html_body: str):
+    """
+    Función base para enviar correos HTML usando las credenciales de config.py
+    """
+    msg = EmailMessage()
+    msg['Subject'] = subject
+    msg['From'] = settings.FROM_EMAIL
+    msg['To'] = to_email
+    
+    # Seteamos el contenido como HTML
+    msg.set_content(html_body, subtype='html')
+
+    try:
+        # Asumiendo que usas el puerto 587 (STARTTLS). 
+        # Si usas 465 (SSL), sería smtplib.SMTP_SSL() en lugar de .SMTP() y sin .starttls()
+        with smtplib.SMTP(settings.SMTP_SERVER, settings.SMTP_PORT) as server:
+            server.starttls() # Asegura la conexión
+            server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+            server.send_message(msg)
+            print(f"✅ Correo enviado exitosamente a {to_email}")
+    except Exception as e:
+        print(f"❌ Error al enviar correo a {to_email}: {e}")
+        # Aquí podrías registrar el error en Sentry o en tu tabla de logs
+
+def process_password_reset_email(email: str):
+    try:
+        # 1. Firebase nos genera el link seguro con el token
+        reset_link = auth.generate_password_reset_link(email)
+        
+        # 2. Armamos el HTML (Aquí puedes poner tu diseño bonito)
+        html_content = f"""
+        <html>
+            <body style="font-family: Arial, sans-serif; color: #333;">
+                <h2>Recuperación de Contraseña</h2>
+                <p>Hola,</p>
+                <p>Recibimos una solicitud para restablecer tu contraseña en WAPPTI.</p>
+                <p>Haz clic en el siguiente enlace para crear una nueva contraseña:</p>
+                <a href="{reset_link}" style="background-color: #007bff; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">Restablecer Contraseña</a>
+                <p><br>Si no solicitaste esto, puedes ignorar este correo.</p>
+            </body>
+        </html>
+        """
+        
+        # 3. Enviamos el correo
+        send_html_email(
+            to_email=email, 
+            subject="WAPPTI - Recupera tu contraseña", 
+            html_body=html_content
+        )
+    except Exception as e:
+        print(f"Error generando link de reseteo para {email}: {e}")
+
+def process_email_verification(email: str):
+    try:
+        # 1. Firebase genera el link de verificación
+        verification_link = auth.generate_email_verification_link(email)
+        
+        # 2. Armamos el HTML
+        html_content = f"""
+        <html>
+            <body style="font-family: Arial, sans-serif; color: #333;">
+                <h2>Bienvenido a WAPPTI</h2>
+                <p>Hola,</p>
+                <p>Para empezar a usar todas las funciones, necesitamos verificar tu correo electrónico.</p>
+                <a href="{verification_link}" style="background-color: #28a745; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">Verificar mi correo</a>
+            </body>
+        </html>
+        """
+        
+        # 3. Enviamos el correo
+        send_html_email(
+            to_email=email, 
+            subject="WAPPTI - Verifica tu correo electrónico", 
+            html_body=html_content
+        )
+    except Exception as e:
+        print(f"Error generando link de verificación para {email}: {e}")
+

@@ -1,5 +1,5 @@
-from sqlalchemy import Column, String, Text, Boolean, DateTime, BigInteger, Integer, ForeignKey, func, ARRAY
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import Column, String, Text, Boolean, DateTime, BigInteger, Integer, ForeignKey, func
+from sqlalchemy.dialects.postgresql import JSONB, ARRAY
 from sqlalchemy.orm import relationship
 from core.database import Base
 
@@ -88,8 +88,19 @@ class AppAd(Base):
     cta_url = Column(Text)
     internal_name = Column(Text)
     views_count = Column(BigInteger, default=0)
-
     hex_color = Column(Text)
+    target_countries = Column(ARRAY(String), default=["all"])
+    clicks_count = Column(BigInteger, default=0)
+    internal_name = Column(String)
+
+class AppAdClick(Base):
+    """Registro de clics en la publicidad para auditoría y métricas"""
+    __tablename__ = "app_ad_clicks"
+    
+    id = Column(BigInteger, primary_key=True, index=True)
+    ad_id = Column(BigInteger, ForeignKey("app_ads.id", ondelete="CASCADE"), index=True)
+    establishment_id = Column(String, index=True) # El UID de Firebase de quien hizo clic
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 class ReferralMKTCampaigns(Base):
     __tablename__ = "referral_mkt_campaigns"

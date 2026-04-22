@@ -23,7 +23,7 @@ from routers.customers import base as base_custom
 from routers.customers import tags as tags_custom
 from routers.customers import finances, operation
 from routers.establishments import base as base_estab
-from routers.establishments import activity, financials, profile, tags, tokens
+from routers.establishments import activity, financials, profile, tags, tokens, auth
 from routers.integrations import kipu
 from routers.marketing import marketing, referral
 from routers.integrations import wapptiweb
@@ -198,6 +198,7 @@ app.include_router(profile.router, prefix="/profile", tags=["Establishments"])
 app.include_router(tags.router, prefix="/tags", tags=["Establishments"])
 app.include_router(financials.router, prefix="/financials", tags=["Establishments"])
 app.include_router(tokens.router, prefix="/token", tags=["Establishments"])
+app.include_router(auth.router, prefix="/auth", tags=["Establishments"])
 app.include_router(base_custom.router, prefix="/customer", tags=["Customers"])
 app.include_router(finances.router, prefix="/customer", tags=["Customers"])
 app.include_router(tags_custom.router, prefix="/customer", tags=["Customers"])
