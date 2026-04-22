@@ -3,7 +3,7 @@ from fastapi.encoders import jsonable_encoder
 from datetime import datetime, timezone, date, timedelta
 from sqlalchemy.sql import func
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, cast, Date
+from sqlalchemy import and_, cast, Date, select, func
 import pytz
 from core.database import get_db
 from core.auth import verify_firebase_token
@@ -182,46 +182,44 @@ def terminate_establishment_data(
         # --- PHASE 1: DELETE ALL OPERATIONAL TRASH (PHYSICAL DELETE) ---
         
         # Access & Security
-        db.query(AppAccessPin).filter(AppAccessPin.id == establishment_id).delete()
-        db.query(WhatsAppAuthPin).filter(WhatsAppAuthPin.associated_phone.in_(
-            db.query(Customer.phone).filter(Customer.establishment_id == establishment_id)
-        )).delete()
+        db.query(AppAccessPin).filter(AppAccessPin.id == establishment_id).delete(synchronize_session=False)
+        
+        # Usamos select() correctamente para que SQLAlchemy no se queje de la subquery
+        phones_stmt = select(Customer.phone).where(Customer.establishment_id == establishment_id)
+        db.query(WhatsAppAuthPin).filter(WhatsAppAuthPin.associated_phone.in_(phones_stmt)).delete(synchronize_session=False)
 
-        # Financial & Planning (CASCADE will handle items/payments)
-        db.query(CustomerPlan).filter(CustomerPlan.establishment_id == establishment_id).delete()
-        db.query(CustomerDebt).filter(CustomerDebt.establishment_id == establishment_id).delete()
-        db.query(CustomerBillingProfile).filter(CustomerBillingProfile.establishment_id == establishment_id).delete()
+        # Financial & Planning
+        db.query(CustomerPlan).filter(CustomerPlan.establishment_id == establishment_id).delete(synchronize_session=False)
+        db.query(CustomerDebt).filter(CustomerDebt.establishment_id == establishment_id).delete(synchronize_session=False)
         
         # History & Feedback
-        db.query(CustomerHistory).filter(CustomerHistory.establishment_id == establishment_id).delete()
-        db.query(CustomerFeedback).filter(CustomerFeedback.establishment_signature == establishment_id).delete()
+        db.query(CustomerHistory).filter(CustomerHistory.establishment_id == establishment_id).delete(synchronize_session=False)
+        db.query(CustomerFeedback).filter(CustomerFeedback.establishment_signature == establishment_id).delete(synchronize_session=False)
         
         # Marketing & System
-        db.query(CustomerTag).filter(CustomerTag.establishment_id == establishment_id).delete()
-        db.query(CalendarNote).filter(CalendarNote.establishment_id == establishment_id).delete()
-        db.query(WhatsAppCampaign).filter(WhatsAppCampaign.establishment_id == establishment_id).delete()
-        db.query(WhatsAppDispatch).filter(WhatsAppDispatch.establishment_id == establishment_id).delete()
-        db.query(PendingFollowup).filter(PendingFollowup.establishment_id == establishment_id).delete()
-        db.query(SystemAlert).filter(SystemAlert.establishment_id == establishment_id).delete()
-
+        db.query(CustomerTag).filter(CustomerTag.establishment_id == establishment_id).delete(synchronize_session=False)
+        db.query(CalendarNote).filter(CalendarNote.establishment_id == establishment_id).delete(synchronize_session=False)
+        db.query(WhatsAppCampaign).filter(WhatsAppCampaign.establishment_id == establishment_id).delete(synchronize_session=False)
+        db.query(WhatsAppDispatch).filter(WhatsAppDispatch.establishment_id == establishment_id).delete(synchronize_session=False)
+        db.query(PendingFollowup).filter(PendingFollowup.establishment_id == establishment_id).delete(synchronize_session=False)
+        db.query(SystemAlert).filter(SystemAlert.establishment_id == establishment_id).delete(synchronize_session=False)
+        db.query(AppAdClick).filter(AppAdClick.establishment_id == establishment_id).delete(synchronize_session=False)
+        
         # Profiles & Audits
-        db.query(Profile).filter(Profile.establishment_id == establishment_id).delete()
-        db.query(SystemAudit).filter(SystemAudit.establishment_id == establishment_id).delete()
-        db.query(UsageAuditLog).filter(UsageAuditLog.establishment_id == establishment_id).delete()
+        db.query(Profile).filter(Profile.establishment_id == establishment_id).delete(synchronize_session=False)
+        db.query(SystemAudit).filter(SystemAudit.establishment_id == establishment_id).delete(synchronize_session=False)
+        db.query(UsageAuditLog).filter(UsageAuditLog.establishment_id == establishment_id).delete(synchronize_session=False)
 
         # --- PHASE 2: SELECTIVE APPOINTMENT CLEANUP ---
-        # Keep only records with whatsapp_id (History of service)
         db.query(Appointment).filter(
             Appointment.establishment_id == establishment_id,
             (Appointment.whatsapp_id == None) | (Appointment.whatsapp_id == "")
-        ).delete()
+        ).delete(synchronize_session=False)
 
         # --- PHASE 3: CUSTOMER ANONIMIZATION & CLEANUP ---
-        # We fetch emails before anonymizing if they have Firebase accounts
         customers = db.query(Customer).filter(Customer.establishment_id == establishment_id).all()
         
         for cust in customers:
-            # Optional: Delete customer from Firebase if they have an account
             if cust.email:
                 try:
                     user_fb = auth.get_user_by_email(cust.email)
@@ -229,28 +227,26 @@ def terminate_establishment_data(
                 except:
                     pass # User doesn't exist in Firebase Auth
 
-        # Now anonymize them in our DB
+        # ¡CLAVE AQUÍ! Generamos valores únicos para no romper las restricciones (UNIQUE)
+        # Email será: "deleted_15@deleted.com" y teléfono será: -15 (suponiendo que su id es 15)
         db.query(Customer).filter(Customer.establishment_id == establishment_id).update({
             "first_name": "deleted_user",
             "last_name": "deleted_user",
-            "email": "deleted@deleted.com",
-            "phone": 0,
+            "email": func.concat('deleted_', Customer.id, '@deleted.com'),
+            "phone": Customer.id * -1, 
             "identification_id": None,
             "notes": "data_purged_due_to_establishment_closure"
-        })
+        }, synchronize_session=False)
 
         # --- PHASE 4: SOFT DELETE ESTABLISHMENT & FIREBASE TERMINATION ---
         establishment.is_deleted = True
         
-        # Final Blow: Delete the establishment owner from Firebase Auth
         try:
             auth.delete_user(establishment_id)
         except Exception as fe:
             print(f"⚠️ FIREBASE_OWNER_DELETE_ERROR: {fe}")
 
         # --- PHASE 5: PROTECT YOUR DATA (DO NOT DELETE) ---
-        # table 'payments' is NEVER touched here.
-        
         db.commit()
         return {"status": "success", "message": "purge_completed_firebase_account_deleted"}
 
